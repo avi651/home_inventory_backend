@@ -15,6 +15,7 @@ from app.core.rate_limit import DEFAULT_AUTH_RATE_LIMITS, InMemoryRateLimiter
 from app.core.security import HTTPSOnlyMiddleware, SecurityHeadersMiddleware, TrustedHostGuard
 from app.core.tokens import AccessTokenService
 from app.exceptions.handlers import register_exception_handlers
+from app.services.apple_oauth import AppleOAuthClient, AppleOAuthConfig
 from app.services.google_oauth import GoogleOAuthClient, GoogleOAuthConfig
 
 DOCS_URL, REDOC_URL, OPENAPI_URL = "/docs", "/redoc", "/openapi.json"
@@ -30,8 +31,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
-        if app.state.google_oauth is not None:
-            await app.state.google_oauth.aclose()
+        for provider in (app.state.google_oauth, app.state.apple_oauth):
+            if provider is not None:
+                await provider.aclose()
         await engine.dispose()
 
     app = FastAPI(
@@ -53,7 +55,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.rate_limits = DEFAULT_AUTH_RATE_LIMITS
     # Created lazily on first use (its constructor runs one Argon2 hash).
     app.state.password_hasher = None
-    # Absent unless configured: the Google endpoints then answer 404 and the API still starts.
+    # Absent unless configured: that provider's endpoints answer 404 and the API still starts.
     app.state.google_oauth = (
         GoogleOAuthClient(
             GoogleOAuthConfig.from_settings(settings),
@@ -61,6 +63,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             clock=lambda: app.state.clock(),
         )
         if settings.google_oauth_enabled
+        else None
+    )
+    app.state.apple_oauth = (
+        AppleOAuthClient(
+            AppleOAuthConfig.from_settings(settings),
+            httpx.AsyncClient(follow_redirects=False),
+            clock=lambda: app.state.clock(),
+        )
+        if settings.apple_oauth_enabled
         else None
     )
 

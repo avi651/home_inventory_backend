@@ -188,7 +188,12 @@ link automatically; it returns a conflict asking the user to sign in and link ex
 verified it. A *new* `sub` whose verified email is already held by any identity →
 `409 account_link_required`. Pending sign-ins live in `oauth_login_attempts` (hashes of state,
 client binding token and nonce, PKCE verifier, 10-minute expiry, deleted on first use). Flow and
-configuration: README "Sign in with Google". Apple follows the same pattern later.
+configuration: README "Sign in with Google".
+
+**Apple (Phase 2 step 9 ✅):** same service, endpoints and attempt table, keyed on
+`(apple, sub)`. Differences forced by Apple: an ES256 client-secret JWT minted per exchange,
+RS256 ID tokens from Apple's JWKS, `response_mode=form_post`, and `email_verified` that may be the
+string `"true"`. See README "Sign in with Apple".
 
 ### `auth_sessions` (Phase 2)
 

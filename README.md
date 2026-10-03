@@ -119,6 +119,69 @@ All three variables are required together. The redirect URI must be an absolute 
 link / App Link that passes `code` and `state` to the app, which then calls `/callback`. In
 production the API itself is HTTPS-only (see below).
 
+## Sign in with Apple
+
+> Placeholders only: no real Apple Developer account, Services ID, key or domain exists yet.
+
+Apple uses the same endpoints, state store and rules as Google:
+`POST /api/v1/auth/apple/start`, then `POST /api/v1/auth/apple/callback {code, state,
+attempt_token}`. Both providers share `OAuthSignInService` and the `oauth_login_attempts` table
+(rows are tagged with the provider, so a Google state cannot complete an Apple sign-in).
+State, binding, nonce, single use, errors and "no implicit linking" are exactly as described
+for Google above.
+
+What Apple does differently, and why:
+
+- **Client secret = ES256 JWT.** Apple has no static client secret. For every code exchange we
+  mint a JWT signed with the team's `.p8` key: header `alg=ES256`, `kid=APPLE_KEY_ID`; claims
+  `iss=APPLE_TEAM_ID`, `sub=APPLE_CLIENT_ID`, `aud=https://appleid.apple.com`, `iat=now`,
+  `exp=now+5 minutes` (Apple allows up to 6 months; minting it fresh keeps it short-lived). It is
+  never stored, logged or returned.
+- **ID tokens are RS256, not ES256.** Apple's JWKS (`https://appleid.apple.com/auth/keys`)
+  publishes RSA keys. ES256 is only for *our* client secret. ID tokens with any other algorithm
+  (`none`, HS256, ES256, RS512, PS256) are rejected. Also checked: `iss=https://appleid.apple.com`,
+  `aud=APPLE_CLIENT_ID`, `exp`/`iat` (60 seconds of tolerance), `nonce`, and a well-formed `sub`.
+  Keys are cached as for Google, with the same throttled refetch on rotation.
+- **`response_mode=form_post`.** Apple requires it whenever a scope is requested (we request
+  `email` only; names are never requested or stored). Apple POSTs `code` and `state` to
+  `APPLE_REDIRECT_URI`, which must hand them to the app; the app then calls `/callback`.
+  Anything else Apple posts there (`id_token`, the first-login `user` JSON) is never sent to or
+  trusted by the API: `/callback` rejects unknown fields, and the identity comes only from the
+  server-side exchange.
+- **PKCE.** Apple does not document PKCE. We still send an S256 `code_challenge` and the
+  `code_verifier` as defence in depth, but security does not rely on Apple enforcing it: the
+  `attempt_token` binding, single-use state and nonce do. The verifier is generated and kept by
+  the server, never accepted from a client, and never logged.
+- **Identity key.** `user_identities(provider="apple", subject=<sub>)`. Apple may send the email
+  only on the first authorization; later sign-ins resolve by `sub` alone and keep the stored
+  address.
+- **Email.** Stored (normalized) only when `email_verified` is `true` or `"true"` — Apple uses
+  both. Private-relay addresses (`…@privaterelay.appleid.com`) are verified, per-app forwarding
+  addresses and are stored like any other verified email. They are never logged.
+- **Account linking.** As for Google: a new Apple `sub` whose verified email already belongs to
+  any account gets `409 account_link_required`; nothing is merged or created.
+- **Rate limits.** Apple uses the same `oauth_start_per_ip` and `oauth_callback_per_ip` rules,
+  and the two providers share one per-IP budget, since both protect the same resources. The
+  limiter is in-memory per process, so production needs the shared backend.
+
+**Apple configuration (placeholders):** create a Services ID with Sign in with Apple enabled,
+register the exact return URL (https only — Apple does not accept http or localhost), and
+create a Sign in with Apple key (`.p8`).
+
+```bash
+APPLE_TEAM_ID=<10-char Team ID>
+APPLE_KEY_ID=<10-char Key ID>
+APPLE_CLIENT_ID=com.example.homeinventory.signin       # Services ID = ID token audience
+APPLE_PRIVATE_KEY=<PEM text of the .p8 key, from the secret manager>
+APPLE_REDIRECT_URI=https://app.example.com/oauth/apple/callback
+```
+
+All five are required together, and startup fails fast on bad values: team/key IDs must be 10
+uppercase letters or digits, the key must be a P-256 (ES256) PEM key, and the redirect URI must
+be https. Errors never echo the key. `APPLE_PRIVATE_KEY` is a `SecretStr`: masked in reprs and
+dumps, and never logged. Never commit a `.p8` file (`.gitignore` blocks `*.p8`). In production
+the API itself is HTTPS-only (see below).
+
 ## Production deployment
 
 > Target model only: no production domain, certificate or cloud infrastructure exists yet.

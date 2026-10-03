@@ -17,8 +17,8 @@ from app.exceptions.errors import (
     RateLimitedError,
 )
 from app.services.auth_service import AuthService
-from app.services.google_oauth import GoogleOAuthClient
-from app.services.google_sign_in_service import GoogleSignInService
+from app.services.oauth_sign_in_service import OAuthSignInService
+from app.services.oidc import OAuthProviderClient
 from app.services.session_service import Principal, SessionService
 
 DbSession = Annotated[AsyncSession, Depends(get_db_session)]
@@ -81,19 +81,24 @@ def get_auth_service(
 AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
 
 
-def get_google_sign_in_service(
-    request: Request,
-    db: DbSession,
-    sessions: SessionServiceDep,
-    clock: Annotated[Clock, Depends(get_clock)],
-) -> GoogleSignInService:
-    google: GoogleOAuthClient | None = request.app.state.google_oauth
-    if google is None:
-        raise ProviderNotConfiguredError
-    return GoogleSignInService(db, google=google, sessions=sessions, clock=clock)
+OAuthServiceFactory = Callable[..., OAuthSignInService]
 
 
-GoogleSignInServiceDep = Annotated[GoogleSignInService, Depends(get_google_sign_in_service)]
+def oauth_service(state_attr: str) -> OAuthServiceFactory:
+    """Dependency for one provider's sign-in service; 404 when that provider isn't configured."""
+
+    def dependency(
+        request: Request,
+        db: DbSession,
+        sessions: SessionServiceDep,
+        clock: Annotated[Clock, Depends(get_clock)],
+    ) -> OAuthSignInService:
+        provider: OAuthProviderClient | None = getattr(request.app.state, state_attr)
+        if provider is None:
+            raise ProviderNotConfiguredError
+        return OAuthSignInService(db, provider=provider, sessions=sessions, clock=clock)
+
+    return dependency
 
 
 def _bearer_token(request: Request) -> str:

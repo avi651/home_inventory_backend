@@ -25,3 +25,9 @@ uploads/
 .DS_Store
 .vscode/
 .idea/
+
+# Credentials: Apple .p8 keys, TLS/private keys, Google service-account files.
+*.p8
+*.pem
+*.key
+*service-account*.json

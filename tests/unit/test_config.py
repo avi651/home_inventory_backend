@@ -1,6 +1,8 @@
 from typing import Any
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from pydantic import ValidationError
 
 from app.core.config import Environment, Settings
@@ -41,6 +43,11 @@ def isolated_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "google_client_id",
         "google_client_secret",
         "google_redirect_uri",
+        "apple_team_id",
+        "apple_key_id",
+        "apple_client_id",
+        "apple_private_key",
+        "apple_redirect_uri",
     ]:
         monkeypatch.delenv(name.upper(), raising=False)
     monkeypatch.delenv("DEBUG", raising=False)
@@ -304,3 +311,110 @@ class TestGoogleOAuthSettings:
 
         assert GOOGLE["google_client_secret"] not in repr(settings)
         assert GOOGLE["google_client_secret"] not in str(settings.model_dump())
+
+
+def apple_key_pem(curve: Any = None) -> str:
+    key = ec.generate_private_key(curve or ec.SECP256R1())
+    return key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+
+
+APPLE_KEY = apple_key_pem()
+APPLE = {
+    "apple_team_id": "ABCDE12345",
+    "apple_key_id": "KEY0123456",
+    "apple_client_id": "com.example.homeinventory.signin",
+    "apple_private_key": APPLE_KEY,
+    "apple_redirect_uri": "https://app.example.com/oauth/apple/callback",
+}
+
+
+class TestAppleOAuthSettings:
+    def test_disabled_by_default(self) -> None:
+        assert build().apple_oauth_enabled is False
+
+    def test_enabled_when_fully_configured(self) -> None:
+        assert build(**APPLE).apple_oauth_enabled is True
+
+    @pytest.mark.parametrize("missing", list(APPLE))
+    def test_partial_configuration_fails_fast(self, missing: str) -> None:
+        values = {k: v for k, v in APPLE.items() if k != missing}
+
+        with pytest.raises(ValidationError, match="APPLE_"):
+            build(**values)
+
+    @pytest.mark.parametrize("field", ["apple_team_id", "apple_key_id"])
+    @pytest.mark.parametrize("value", ["abcde12345", "ABCDE1234", "ABCDE123456", "ABCDE-1234"])
+    def test_team_and_key_ids_are_ten_uppercase_alphanumerics(self, field: str, value: str) -> None:
+        with pytest.raises(ValidationError, match="APPLE_"):
+            build(**{**APPLE, field: value})
+
+    @pytest.mark.parametrize("client_id", ["", "has space", "x" * 256])
+    def test_client_id_must_be_a_services_identifier(self, client_id: str) -> None:
+        with pytest.raises(ValidationError, match="APPLE_CLIENT_ID"):
+            build(**{**APPLE, "apple_client_id": client_id})
+
+    def test_private_key_may_use_escaped_newlines(self) -> None:
+        escaped = APPLE_KEY.replace("\n", "\\n")
+
+        assert build(**{**APPLE, "apple_private_key": escaped}).apple_oauth_enabled
+
+    @pytest.mark.parametrize(
+        "key_factory",
+        [
+            pytest.param(lambda: "not a key", id="garbage"),
+            pytest.param(
+                lambda: "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----",
+                id="truncated",
+            ),
+            pytest.param(lambda: apple_key_pem(ec.SECP384R1()), id="p384"),
+            pytest.param(lambda: _rsa_pem(), id="rsa"),
+        ],
+    )
+    def test_private_key_must_be_an_es256_p256_key(self, key_factory: Any) -> None:
+        key = key_factory()
+
+        with pytest.raises(ValidationError, match="APPLE_PRIVATE_KEY") as exc_info:
+            build(**{**APPLE, "apple_private_key": key})
+
+        assert key not in str(exc_info.value)
+        assert "MII" not in str(exc_info.value)
+
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            "http://app.example.com/cb",
+            "http://localhost:3000/cb",  # Apple does not accept localhost or http redirects
+            "https://app.example.com/cb#fragment",
+            "app.example.com/cb",
+            "com.example.app:/callback",
+        ],
+    )
+    def test_redirect_uri_must_be_https(self, uri: str) -> None:
+        with pytest.raises(ValidationError, match="APPLE_REDIRECT_URI"):
+            build(**{**APPLE, "apple_redirect_uri": uri})
+
+    def test_production_accepts_a_full_configuration(self) -> None:
+        settings = build(environment="production", allowed_hosts=["api.example.com"], **APPLE)
+
+        assert settings.apple_oauth_enabled
+
+    def test_private_key_is_masked(self) -> None:
+        settings = build(**APPLE)
+        body = "".join(APPLE_KEY.splitlines()[1:-1])
+
+        for text in (repr(settings), str(settings.model_dump())):
+            assert body[:40] not in text
+            assert "PRIVATE KEY" not in text
+
+
+def _rsa_pem() -> str:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    return key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()

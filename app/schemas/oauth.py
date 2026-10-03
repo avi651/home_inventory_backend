@@ -1,6 +1,6 @@
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
-from app.services.google_sign_in_service import OAuthStart
+from app.services.oauth_sign_in_service import OAuthStart
 
 
 class OAuthStartResponse(BaseModel):

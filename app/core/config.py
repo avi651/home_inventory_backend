@@ -7,11 +7,15 @@ from urllib.parse import urlsplit
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.apple_keys import load_apple_private_key
+
 MIN_JWT_SECRET_LENGTH = 32
 MIN_JWT_SECRET_DISTINCT_CHARS = 10
 PLACEHOLDER_MARKERS = ("changeme", "change-me", "placeholder", "example", "generate", "<", ">")
 REQUIRED_DB_SCHEME = "postgresql+psycopg://"
 # A bare lowercase hostname or IP (optionally a "*.domain" pattern): no scheme, port or path.
+_APPLE_ID = re.compile(r"[A-Z0-9]{10}")
+_APPLE_CLIENT_ID = re.compile(r"[A-Za-z0-9.-]{1,255}")
 _ALLOWED_HOST = re.compile(r"(\*\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?")
 
 
@@ -55,6 +59,15 @@ class Settings(BaseSettings):
     # `state` to the client. Must exactly match the URI registered in the Google console.
     google_redirect_uri: str | None = None
 
+    # Sign in with Apple (Step 9). All five or none: unset means the endpoints answer 404.
+    apple_team_id: str | None = None
+    apple_key_id: str | None = None
+    # The Services ID (e.g. com.example.app.signin): the `aud` of Apple's ID tokens.
+    apple_client_id: str | None = None
+    # The .p8 key's PEM text (newlines may be escaped as \n). Only ever from a secret manager.
+    apple_private_key: SecretStr | None = None
+    apple_redirect_uri: str | None = None
+
     @property
     def docs_enabled(self) -> bool:
         return self.environment is not Environment.PRODUCTION
@@ -62,6 +75,10 @@ class Settings(BaseSettings):
     @property
     def google_oauth_enabled(self) -> bool:
         return self.google_client_id is not None
+
+    @property
+    def apple_oauth_enabled(self) -> bool:
+        return self.apple_client_id is not None
 
     @property
     def https_required(self) -> bool:
@@ -133,6 +150,40 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _validate_apple_oauth(self) -> Self:
+        values = (
+            self.apple_team_id,
+            self.apple_key_id,
+            self.apple_client_id,
+            self.apple_private_key,
+            self.apple_redirect_uri,
+        )
+        if all(value is None for value in values):
+            return self
+        if any(value is None for value in values):
+            raise ValueError(
+                "APPLE_TEAM_ID, APPLE_KEY_ID, APPLE_CLIENT_ID, APPLE_PRIVATE_KEY and"
+                " APPLE_REDIRECT_URI must be set together"
+            )
+        if not _APPLE_ID.fullmatch(self.apple_team_id or ""):
+            raise ValueError("APPLE_TEAM_ID must be 10 uppercase letters or digits")
+        if not _APPLE_ID.fullmatch(self.apple_key_id or ""):
+            raise ValueError("APPLE_KEY_ID must be 10 uppercase letters or digits")
+        if not _APPLE_CLIENT_ID.fullmatch(self.apple_client_id or ""):
+            raise ValueError("APPLE_CLIENT_ID must be a Services ID like com.example.app.signin")
+        try:
+            load_apple_private_key(_secret(self.apple_private_key))
+        except ValueError:
+            raise ValueError(
+                "APPLE_PRIVATE_KEY must be the PEM text of an ES256 (P-256) .p8 key"
+            ) from None
+        uri = urlsplit(self.apple_redirect_uri or "")
+        # Apple only accepts https redirect URIs (no http, no localhost exceptions).
+        if uri.scheme != "https" or not uri.hostname or uri.fragment:
+            raise ValueError("APPLE_REDIRECT_URI must be an absolute https URL without a fragment")
+        return self
+
+    @model_validator(mode="after")
     def _enforce_production_hardening(self) -> Self:
         if self.environment is not Environment.PRODUCTION:
             return self
@@ -146,6 +197,10 @@ class Settings(BaseSettings):
         if any("*" in host for host in self.allowed_hosts):
             raise ValueError("wildcard ALLOWED_HOSTS patterns are not allowed in production")
         return self
+
+
+def _secret(value: SecretStr | None) -> str:
+    return value.get_secret_value() if value is not None else ""
 
 
 @lru_cache
