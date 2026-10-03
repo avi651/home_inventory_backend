@@ -1,8 +1,12 @@
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import health
 from app.core.config import Settings, get_settings
+from app.core.database import create_db_engine, create_session_factory
 from app.core.logging import install_log_redaction
 from app.core.security import SecurityHeadersMiddleware
 from app.exceptions.handlers import register_exception_handlers
@@ -15,6 +19,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     install_log_redaction()
     docs = settings.docs_enabled
+    engine = create_db_engine(settings)
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        yield
+        await engine.dispose()
 
     app = FastAPI(
         title="Home Inventory AI",
@@ -23,8 +33,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         docs_url=DOCS_URL if docs else None,
         redoc_url=REDOC_URL if docs else None,
         openapi_url=OPENAPI_URL if docs else None,
+        lifespan=lifespan,
     )
     app.state.settings = settings
+    app.state.engine = engine
+    app.state.session_factory = create_session_factory(engine)
 
     register_exception_handlers(app, settings)
 
