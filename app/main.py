@@ -11,8 +11,17 @@ from app.core.clock import utc_now
 from app.core.config import Settings, get_settings
 from app.core.database import create_db_engine, create_session_factory
 from app.core.logging import install_log_redaction
-from app.core.rate_limit import DEFAULT_AUTH_RATE_LIMITS, InMemoryRateLimiter
-from app.core.security import HTTPSOnlyMiddleware, SecurityHeadersMiddleware, TrustedHostGuard
+from app.core.rate_limit import (
+    DEFAULT_AUTH_RATE_LIMITS,
+    DEFAULT_RESOURCE_RATE_LIMITS,
+    InMemoryRateLimiter,
+)
+from app.core.security import (
+    HTTPSOnlyMiddleware,
+    RequestBodyLimitMiddleware,
+    SecurityHeadersMiddleware,
+    TrustedHostGuard,
+)
 from app.core.tokens import AccessTokenService
 from app.exceptions.handlers import register_exception_handlers
 from app.services.apple_oauth import AppleOAuthClient, AppleOAuthConfig
@@ -53,6 +62,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.access_tokens = AccessTokenService(settings, clock=lambda: app.state.clock())
     app.state.rate_limiter = InMemoryRateLimiter(clock=lambda: app.state.clock())
     app.state.rate_limits = DEFAULT_AUTH_RATE_LIMITS
+    app.state.resource_rate_limits = DEFAULT_RESOURCE_RATE_LIMITS
     # Created lazily on first use (its constructor runs one Argon2 hash).
     app.state.password_hasher = None
     # Absent unless configured: that provider's endpoints answer 404 and the API still starts.
@@ -86,6 +96,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             allow_headers=["Authorization", "Content-Type"],
             max_age=600,
         )
+    # Oversized bodies are refused before CORS, auth, parsing or the database.
+    app.add_middleware(RequestBodyLimitMiddleware)
     # Transport checks run before CORS and routing, so a rejected request touches nothing.
     if settings.https_required:
         app.add_middleware(HTTPSOnlyMiddleware, exempt_paths=health.PROBE_PATHS)

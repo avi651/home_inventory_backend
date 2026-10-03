@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from app.core.config import Environment, Settings
 from app.core.database import create_db_engine, get_db_session
-from app.core.rate_limit import AuthRateLimits, RateLimit
+from app.core.rate_limit import AuthRateLimits, RateLimit, ResourceRateLimits
 from app.main import create_app
 from tests.support.passwords import fast_hasher
 
@@ -27,6 +27,11 @@ GENEROUS_RATE_LIMITS = AuthRateLimits(
     guest_per_ip=_UNLIMITED,
     oauth_start_per_ip=_UNLIMITED,
     oauth_callback_per_ip=_UNLIMITED,
+)
+GENEROUS_RESOURCE_RATE_LIMITS = ResourceRateLimits(
+    homes_create_per_user=_UNLIMITED,
+    homes_write_per_user=_UNLIMITED,
+    homes_read_per_user=_UNLIMITED,
 )
 
 
@@ -144,6 +149,7 @@ async def auth_app(test_settings: Settings, db_session: AsyncSession) -> AsyncIt
     app.dependency_overrides[get_db_session] = override_db
     app.state.password_hasher = fast_hasher()
     app.state.rate_limits = GENEROUS_RATE_LIMITS
+    app.state.resource_rate_limits = GENEROUS_RESOURCE_RATE_LIMITS
     yield app
     await dispose_app(app)
 

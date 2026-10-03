@@ -9,7 +9,7 @@ from app.core.clock import Clock
 from app.core.config import Settings
 from app.core.database import get_db_session
 from app.core.passwords import PasswordHasher
-from app.core.rate_limit import AuthRateLimits, RateLimit, RateLimiter
+from app.core.rate_limit import AuthRateLimits, RateLimit, RateLimiter, ResourceRateLimits
 from app.core.tokens import AccessTokenClaims, AccessTokenService, InvalidTokenError
 from app.exceptions.errors import (
     AuthenticationRequiredError,
@@ -17,6 +17,7 @@ from app.exceptions.errors import (
     RateLimitedError,
 )
 from app.services.auth_service import AuthService
+from app.services.home_service import HomeService
 from app.services.oauth_sign_in_service import OAuthSignInService
 from app.services.oidc import OAuthProviderClient
 from app.services.session_service import Principal, SessionService
@@ -162,3 +163,28 @@ def rate_limited(rule_name: str) -> Any:
 
     check: Callable[[Request], Awaitable[None]] = dependency
     return Depends(check)
+
+
+def rate_limited_per_user(rule_name: str) -> Any:
+    """Per-user limit for one of ResourceRateLimits' rules, e.g. "homes_read_per_user".
+
+    Keyed by the authenticated user id, not the IP: fair behind shared (CGNAT) addresses and
+    not dodged by switching networks. Authentication runs first, so anonymous calls get 401.
+    """
+
+    async def dependency(request: Request, principal: CurrentPrincipal) -> None:
+        limits: ResourceRateLimits = request.app.state.resource_rate_limits
+        rule: RateLimit = getattr(limits, rule_name)
+        limiter: RateLimiter = request.app.state.rate_limiter
+        result = await limiter.hit(f"{rule_name}:{principal.user.id}", rule)
+        if not result.allowed:
+            raise RateLimitedError(result.retry_after)
+
+    return Depends(dependency)
+
+
+def get_home_service(db: DbSession) -> HomeService:
+    return HomeService(db)
+
+
+HomeServiceDep = Annotated[HomeService, Depends(get_home_service)]

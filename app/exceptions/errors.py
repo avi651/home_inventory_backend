@@ -105,3 +105,23 @@ class ProviderNotConfiguredError(AppError):
     status_code = 404
     code = "not_found"
     message = "Not found"
+
+
+class HomeNotFoundError(AppError):
+    """Nonexistent and not-yours are deliberately identical (and identical to a routing 404)."""
+
+    status_code = 404
+    code = "not_found"
+    message = "Not found"
+
+
+class HomeNameTakenError(AppError):
+    status_code = 409
+    code = "home_name_taken"
+    message = "A home with this name already exists"
+
+
+class HomeLimitReachedError(AppError):
+    status_code = 409
+    code = "home_limit_reached"
+    message = "Home limit reached"

@@ -50,6 +50,26 @@ DEFAULT_AUTH_RATE_LIMITS = AuthRateLimits(
 )
 
 
+@dataclass(frozen=True)
+class ResourceRateLimits:
+    """Per-user limits for authenticated resource endpoints (keyed by user id, not IP)."""
+
+    homes_create_per_user: RateLimit
+    homes_write_per_user: RateLimit
+    homes_read_per_user: RateLimit
+
+
+# Starting values, to be tuned against real traffic (see README "Rate limits").
+DEFAULT_RESOURCE_RATE_LIMITS = ResourceRateLimits(
+    # People create a handful of homes, ever; the 50-home cap bounds the total anyway.
+    homes_create_per_user=RateLimit(limit=20, window=timedelta(hours=1)),
+    # Renames and deletes are rare manual actions with the same cost: one shared bucket.
+    homes_write_per_user=RateLimit(limit=60, window=timedelta(hours=1)),
+    # Reads follow app navigation/refresh; this stops scripts, not people.
+    homes_read_per_user=RateLimit(limit=300, window=timedelta(minutes=1)),
+)
+
+
 class RateLimiter(Protocol):
     async def hit(self, key: str, rule: RateLimit) -> RateLimitResult: ...
 

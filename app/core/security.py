@@ -7,6 +7,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.core.config import Environment, Settings
 
+MAX_REQUEST_BODY_BYTES = 1024 * 1024
 HSTS_VALUE = "max-age=63072000; includeSubDomains"
 API_CSP = "default-src 'none'; frame-ancestors 'none'"
 
@@ -123,3 +124,70 @@ class TrustedHostGuard:
             await _error("invalid_host", "Invalid host")(scope, receive, send)
             return
         await self.app(scope, receive, send)
+
+
+class _BodyTooLargeError(Exception):
+    pass
+
+
+class RequestBodyLimitMiddleware:
+    """Refuses request bodies over `max_bytes` with 413, before auth, parsing or the database.
+
+    A declared Content-Length over the limit is refused without reading anything. Bodies
+    without one (chunked) are counted while streamed and cut off at the limit, so leaving the
+    header out does not get around it. Routes needing larger bodies (future uploads) will need
+    their own, explicit limit.
+    """
+
+    def __init__(self, app: ASGIApp, max_bytes: int = MAX_REQUEST_BODY_BYTES) -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        declared = _content_length(scope)
+        if declared is not None and declared > self.max_bytes:
+            await _too_large(scope, receive, send)
+            return
+
+        received = 0
+        response_started = False
+
+        async def counting_receive() -> Message:
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_bytes:
+                    raise _BodyTooLargeError
+            return message
+
+        async def tracking_send(message: Message) -> None:
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self.app(scope, counting_receive, tracking_send)
+        except _BodyTooLargeError:
+            if response_started:  # pragma: no cover - apps read the body before responding
+                raise
+            await _too_large(scope, receive, send)
+
+
+def _content_length(scope: Scope) -> int | None:
+    for name, value in scope["headers"]:
+        if name == b"content-length":
+            try:
+                return int(value)
+            except ValueError:
+                return None
+    return None
+
+
+async def _too_large(scope: Scope, receive: Receive, send: Send) -> None:
+    body = {"error": {"code": "payload_too_large", "message": "Request body too large"}}
+    await JSONResponse(body, status_code=413)(scope, receive, send)
