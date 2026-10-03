@@ -1,6 +1,7 @@
 import base64
 import contextlib
 import json
+import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -470,3 +471,26 @@ def test_decode_only_ever_raises_invalid_token_error(
         token = forge(valid_claims(test_settings, clock, **{claim: value}), secret)
         with contextlib.suppress(InvalidTokenError):
             service.decode(token)
+
+
+def test_raw_tokens_and_secret_are_never_logged(
+    service: AccessTokenService,
+    test_settings: Settings,
+    clock: FrozenClock,
+    secret: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Covers our code and PyJWT's loggers, for both successful and failed validation."""
+    caplog.set_level(logging.DEBUG)
+    good = service.issue(user_id=USER_ID, session_id=SESSION_ID).token
+    bad = forge(valid_claims(test_settings, clock), "wrong-secret-but-long-enough-xyz-123")
+
+    service.decode(good)
+    with contextlib.suppress(InvalidTokenError):
+        service.decode(bad)
+
+    logged = "\n".join(
+        f"{record.getMessage()} {record.exc_text or ''}" for record in caplog.records
+    )
+    for sensitive in (good, bad, secret, *good.split("."), *bad.split(".")):
+        assert sensitive not in logged
