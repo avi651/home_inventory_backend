@@ -1,0 +1,27 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Tooling
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.ruff_cache/
+.mypy_cache/
+
+# Local uploads (future) — stored outside source tree, but guard anyway
+uploads/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
