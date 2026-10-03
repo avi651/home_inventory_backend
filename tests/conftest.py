@@ -25,6 +25,8 @@ GENEROUS_RATE_LIMITS = AuthRateLimits(
     login_per_account=_UNLIMITED,
     refresh_per_ip=_UNLIMITED,
     guest_per_ip=_UNLIMITED,
+    oauth_start_per_ip=_UNLIMITED,
+    oauth_callback_per_ip=_UNLIMITED,
 )
 
 

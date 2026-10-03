@@ -184,6 +184,12 @@ CHECK lowercase email/format. Unlinking the last identity of a non-guest user is
 Sign-in with Google/Apple whose email matches another account's email identity does **not**
 link automatically; it returns a conflict asking the user to sign in and link explicitly.
 
+**Google (Phase 2 step 8 ✅):** `(google, sub)` is the key; the email is stored only if Google
+verified it. A *new* `sub` whose verified email is already held by any identity →
+`409 account_link_required`. Pending sign-ins live in `oauth_login_attempts` (hashes of state,
+client binding token and nonce, PKCE verifier, 10-minute expiry, deleted on first use). Flow and
+configuration: README "Sign in with Google". Apple follows the same pattern later.
+
 ### `auth_sessions` (Phase 2)
 
 | Column | Type / rule |

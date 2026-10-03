@@ -62,8 +62,9 @@ class UserIdentity(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     # email: the normalized address; google/apple: the ID token `sub` (case-sensitive, opaque).
     subject: Mapped[str] = mapped_column(String(SUBJECT_MAX_LENGTH))
-    # Required for email; informational only for Google/Apple and never used for linking.
-    email: Mapped[str | None] = mapped_column(String(EMAIL_MAX_LENGTH))
+    # Required for email; for Google/Apple only a provider-verified address. Never used to link:
+    # indexed so a new provider sign-in can detect "this email already has an account" (409).
+    email: Mapped[str | None] = mapped_column(String(EMAIL_MAX_LENGTH), index=True)
     email_verified: Mapped[bool] = mapped_column(default=False, server_default=false())
     # Argon2id, email identities only. Never serialised: response schemas must not include it.
     password_hash: Mapped[str | None] = mapped_column(String(255))

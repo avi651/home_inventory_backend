@@ -91,9 +91,13 @@ async def test_runtime_role_has_dml_but_not_ownership_on_every_app_table(
             )
         ).all()
 
-    assert {"users", "user_identities", "auth_sessions", "refresh_tokens"} <= {
-        row[0] for row in rows
-    }
+    assert {
+        "users",
+        "user_identities",
+        "auth_sessions",
+        "refresh_tokens",
+        "oauth_login_attempts",
+    } <= {row[0] for row in rows}
     for table, is_owner, has_dml in rows:
         assert has_dml, f"runtime role lacks DML on {table}"
         assert not is_owner, f"runtime role owns {table}"

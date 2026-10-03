@@ -35,7 +35,13 @@ def build(**overrides: Any) -> Settings:
 @pytest.fixture(autouse=True)
 def isolated_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     """Ensure real environment variables never leak into these tests."""
-    for name in [*valid_settings(), "allowed_hosts"]:
+    for name in [
+        *valid_settings(),
+        "allowed_hosts",
+        "google_client_id",
+        "google_client_secret",
+        "google_redirect_uri",
+    ]:
         monkeypatch.delenv(name.upper(), raising=False)
     monkeypatch.delenv("DEBUG", raising=False)
 
@@ -242,3 +248,59 @@ class TestAllowedHosts:
             build(environment="production", allowed_hosts=["https://internal-lb.corp:8443"])
 
         assert "internal-lb.corp" not in str(exc_info.value)
+
+
+GOOGLE = {
+    "google_client_id": "1234-abc.apps.googleusercontent.com",
+    "google_client_secret": "GOCSPX-test-secret-value-Zr8",
+    "google_redirect_uri": "https://app.example.com/oauth/google/callback",
+}
+
+
+class TestGoogleOAuthSettings:
+    def test_disabled_by_default(self) -> None:
+        assert build().google_oauth_enabled is False
+
+    def test_enabled_when_fully_configured(self) -> None:
+        assert build(**GOOGLE).google_oauth_enabled is True
+
+    @pytest.mark.parametrize("missing", list(GOOGLE))
+    def test_partial_configuration_fails_fast(self, missing: str) -> None:
+        values = {k: v for k, v in GOOGLE.items() if k != missing}
+
+        with pytest.raises(ValidationError, match="GOOGLE_"):
+            build(**values)
+
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            "app.example.com/callback",
+            "ftp://app.example.com/cb",
+            "https://app.example.com/cb#fragment",
+            "https:///no-host",
+            "com.example.app:/oauth2redirect",
+        ],
+    )
+    def test_redirect_uri_must_be_an_absolute_http_url(self, uri: str) -> None:
+        with pytest.raises(ValidationError, match="GOOGLE_REDIRECT_URI"):
+            build(**{**GOOGLE, "google_redirect_uri": uri})
+
+    def test_local_may_use_http_localhost(self) -> None:
+        settings = build(**{**GOOGLE, "google_redirect_uri": "http://localhost:3000/cb"})
+
+        assert settings.google_oauth_enabled
+
+    @pytest.mark.parametrize("uri", ["http://localhost:3000/cb", "http://app.example.com/cb"])
+    def test_production_requires_https_redirect(self, uri: str) -> None:
+        with pytest.raises(ValidationError, match="GOOGLE_REDIRECT_URI"):
+            build(
+                environment="production",
+                allowed_hosts=["api.example.com"],
+                **{**GOOGLE, "google_redirect_uri": uri},
+            )
+
+    def test_client_secret_is_masked(self) -> None:
+        settings = build(**GOOGLE)
+
+        assert GOOGLE["google_client_secret"] not in repr(settings)
+        assert GOOGLE["google_client_secret"] not in str(settings.model_dump())

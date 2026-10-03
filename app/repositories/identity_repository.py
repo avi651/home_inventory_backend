@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
@@ -44,3 +44,8 @@ class IdentityRepository:
             select(UserIdentity).where(UserIdentity.user_id == user_id).order_by(UserIdentity.id)
         )
         return list(result.scalars())
+
+    async def email_in_use(self, email: str) -> bool:
+        """Any identity (email login, or a provider-verified address) already holds this email."""
+        result = await self._db.execute(select(exists().where(UserIdentity.email == email)))
+        return bool(result.scalar_one())

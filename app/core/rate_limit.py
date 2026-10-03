@@ -34,6 +34,8 @@ class AuthRateLimits:
     login_per_account: RateLimit
     refresh_per_ip: RateLimit
     guest_per_ip: RateLimit
+    oauth_start_per_ip: RateLimit
+    oauth_callback_per_ip: RateLimit
 
 
 DEFAULT_AUTH_RATE_LIMITS = AuthRateLimits(
@@ -42,6 +44,9 @@ DEFAULT_AUTH_RATE_LIMITS = AuthRateLimits(
     login_per_account=RateLimit(limit=5, window=timedelta(minutes=15)),
     refresh_per_ip=RateLimit(limit=30, window=timedelta(minutes=1)),
     guest_per_ip=RateLimit(limit=10, window=timedelta(hours=1)),
+    # Each start writes a short-lived DB row; a person retries sign-in a handful of times.
+    oauth_start_per_ip=RateLimit(limit=10, window=timedelta(minutes=1)),
+    oauth_callback_per_ip=RateLimit(limit=10, window=timedelta(minutes=1)),
 )
 
 

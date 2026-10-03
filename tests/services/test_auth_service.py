@@ -357,6 +357,8 @@ class TestLogin:
             login_per_account=RateLimit(limit=2, window=timedelta(minutes=15)),
             refresh_per_ip=GENEROUS_RATE_LIMITS.refresh_per_ip,
             guest_per_ip=GENEROUS_RATE_LIMITS.guest_per_ip,
+            oauth_start_per_ip=GENEROUS_RATE_LIMITS.oauth_start_per_ip,
+            oauth_callback_per_ip=GENEROUS_RATE_LIMITS.oauth_callback_per_ip,
         )
         service = build_service(db_session, test_settings, clock, hasher, limits)
         await service.register(EMAIL, STRONG_PASSWORD)

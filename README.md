@@ -52,6 +52,73 @@ Endpoints so far: `GET /health` (liveness, no DB), `GET /health/ready` (DB check
 - `ENVIRONMENT=production` disables `/docs`, `/redoc`, `/openapi.json`.
 - Run migrations with the migrator role in the deploy pipeline; the API only gets the app role.
 
+## Sign in with Google
+
+> Placeholders only: no real Google Cloud project, client or domain exists yet.
+
+Authorization Code flow with the code exchanged **server-side**, plus PKCE and a nonce:
+
+```
+Client                         API                                   Google
+  │ POST /api/v1/auth/google/start ─▶│ store attempt (hashes of state,
+  │                                   │ attempt_token, nonce; PKCE verifier;
+  │ ◀── {authorization_url,           │ expires in 10 min)
+  │      attempt_token, expires_in}   │
+  │ open authorization_url ───────────────────────────────────────────▶│ user consents
+  │ ◀──────────────── redirect to GOOGLE_REDIRECT_URI?code=…&state=… ───│
+  │ POST /api/v1/auth/google/callback │
+  │   {code, state, attempt_token} ──▶│ consume attempt (single use) ─────▶│ POST /token
+  │                                   │   code + PKCE verifier + secret    │ (server-side)
+  │                                   │ ◀──────────────────────── id_token │
+  │                                   │ verify id_token (JWKS), resolve
+  │ ◀── standard AuthResponse ────────│ (google, sub) → user, start session
+```
+
+- **Why POST for both endpoints.** `start` creates server state and returns a secret, so it must
+  not be cacheable, prefetchable or triggerable by a cross-site link. `callback` takes the code in
+  a JSON body so it never appears in URLs or access logs.
+- **State.** 256-bit random, stored only as a SHA-256 digest, valid 10 minutes, deleted when first
+  presented (even if the sign-in then fails), so replays always fail. Attempts live in PostgreSQL,
+  so single use holds across workers.
+- **Binding.** `attempt_token` stays inside the client that called `start` and never passes
+  through the browser redirect. A stolen `code` + `state` (for example from an intercepted
+  redirect) cannot complete the sign-in without it. Comparison is constant-time.
+- **PKCE and nonce.** The server keeps the PKCE verifier and sends it with the code, so a code
+  only works for the attempt it was issued to. The nonce is bound to the ID token.
+- **ID token checks.** RS256 only, with Google's key selected by `kid` from the JWKS endpoint
+  (cached 1 hour; an unknown `kid` refetches at most once a minute). Also checked: `iss`
+  (`https://accounts.google.com` or `accounts.google.com`), `aud` equal to the client ID, `azp`
+  (if present), `exp`/`iat` with 60 seconds of tolerance, `nonce`, and a well-formed `sub`.
+- **Identity key.** `user_identities(provider="google", subject=<sub>)`. Google's `sub` never
+  changes; email addresses can. No password hash is ever stored on a Google identity.
+- **Email.** Stored on the identity (normalized) only if Google marks it verified
+  (`email_verified: true`); otherwise it is dropped and the sign-in still works on `sub`.
+- **No implicit linking.** A new Google account whose verified email already belongs to any
+  account gets `409 account_link_required` (sign in with that account and link explicitly — a
+  future step). Accounts are never merged by email, and a password account is never signed in
+  through Google. An existing `(google, sub)` always signs in its own user.
+- **Errors.** Bad, expired or replayed state, a rejected code or ID token, or an inactive account
+  → `401 oauth_failed`. Timeouts, Google 5xx/429 or malformed responses →
+  `503 provider_unavailable`. Not configured → `404`. Codes, tokens, state, the client secret and
+  provider response bodies are never returned or logged.
+- **Rate limits.** `oauth_start_per_ip` and `oauth_callback_per_ip`, 10/minute each. The limiter
+  is in-memory per process, like the other auth limits, so production needs the shared (Redis)
+  backend behind the same `RateLimiter` protocol.
+
+**Google configuration (placeholders):** create an OAuth client of type *Web application*,
+register the exact redirect URI, and request scopes `openid email`.
+
+```bash
+GOOGLE_CLIENT_ID=<client-id>.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=<from the secret manager>      # SecretStr; never logged or committed
+GOOGLE_REDIRECT_URI=https://app.example.com/oauth/google/callback
+```
+
+All three variables are required together. The redirect URI must be an absolute `https` URL
+(`http://localhost` is allowed outside production). The redirect target is a page or a universal
+link / App Link that passes `code` and `state` to the app, which then calls `/callback`. In
+production the API itself is HTTPS-only (see below).
+
 ## Production deployment
 
 > Target model only: no production domain, certificate or cloud infrastructure exists yet.

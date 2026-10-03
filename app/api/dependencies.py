@@ -11,8 +11,14 @@ from app.core.database import get_db_session
 from app.core.passwords import PasswordHasher
 from app.core.rate_limit import AuthRateLimits, RateLimit, RateLimiter
 from app.core.tokens import AccessTokenClaims, AccessTokenService, InvalidTokenError
-from app.exceptions.errors import AuthenticationRequiredError, RateLimitedError
+from app.exceptions.errors import (
+    AuthenticationRequiredError,
+    ProviderNotConfiguredError,
+    RateLimitedError,
+)
 from app.services.auth_service import AuthService
+from app.services.google_oauth import GoogleOAuthClient
+from app.services.google_sign_in_service import GoogleSignInService
 from app.services.session_service import Principal, SessionService
 
 DbSession = Annotated[AsyncSession, Depends(get_db_session)]
@@ -73,6 +79,21 @@ def get_auth_service(
 
 
 AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
+
+
+def get_google_sign_in_service(
+    request: Request,
+    db: DbSession,
+    sessions: SessionServiceDep,
+    clock: Annotated[Clock, Depends(get_clock)],
+) -> GoogleSignInService:
+    google: GoogleOAuthClient | None = request.app.state.google_oauth
+    if google is None:
+        raise ProviderNotConfiguredError
+    return GoogleSignInService(db, google=google, sessions=sessions, clock=clock)
+
+
+GoogleSignInServiceDep = Annotated[GoogleSignInService, Depends(get_google_sign_in_service)]
 
 
 def _bearer_token(request: Request) -> str:

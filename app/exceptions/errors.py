@@ -69,3 +69,39 @@ class RateLimitedError(AppError):
 
     def __init__(self, retry_after: int) -> None:
         super().__init__(headers={"Retry-After": str(retry_after)})
+
+
+class OAuthSignInFailedError(AppError):
+    """Unknown/expired/replayed state, rejected code or ID token, or an inactive account."""
+
+    status_code = 401
+    code = "oauth_failed"
+    message = "Unable to sign in with this provider"
+
+
+class AccountLinkRequiredError(AppError):
+    """A new provider identity's verified email already belongs to an account (D1: never merge).
+
+    Only the verified owner of that email address can reach this, so it is not an
+    enumeration oracle for third parties.
+    """
+
+    status_code = 409
+    code = "account_link_required"
+    message = "Sign in with your existing account to link this sign-in method"
+
+
+class ProviderUnavailableError(AppError):
+    """The identity provider timed out, failed or answered malformed responses."""
+
+    status_code = 503
+    code = "provider_unavailable"
+    message = "Sign-in provider is unavailable"
+
+
+class ProviderNotConfiguredError(AppError):
+    """The provider is not configured on this deployment: its endpoints behave as absent."""
+
+    status_code = 404
+    code = "not_found"
+    message = "Not found"

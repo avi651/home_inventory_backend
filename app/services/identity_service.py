@@ -74,6 +74,11 @@ class IdentityService:
     async def list_for_user(self, user_id: uuid.UUID) -> list[UserIdentity]:
         return await self._identities.list_for_user(user_id)
 
+    async def email_in_use(self, email: str) -> bool:
+        """For refusing implicit linking: a new provider identity with this verified email must
+        not become a second account silently, nor be merged into the existing one (D1)."""
+        return await self._identities.email_in_use(normalize_email(email))
+
     async def link(
         self,
         user_id: uuid.UUID,

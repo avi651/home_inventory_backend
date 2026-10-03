@@ -2,6 +2,7 @@ import re
 from enum import StrEnum
 from functools import lru_cache
 from typing import Literal, Self
+from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -47,9 +48,20 @@ class Settings(BaseSettings):
     # production, Host is not checked (e.g. a phone reaching a dev machine by LAN IP).
     allowed_hosts: list[str] = []
 
+    # Google sign-in (Step 8). All three or none: unset means the endpoints answer 404.
+    google_client_id: str | None = None
+    google_client_secret: SecretStr | None = None
+    # Where Google sends the browser back: an https page/universal link that hands `code` and
+    # `state` to the client. Must exactly match the URI registered in the Google console.
+    google_redirect_uri: str | None = None
+
     @property
     def docs_enabled(self) -> bool:
         return self.environment is not Environment.PRODUCTION
+
+    @property
+    def google_oauth_enabled(self) -> bool:
+        return self.google_client_id is not None
 
     @property
     def https_required(self) -> bool:
@@ -94,6 +106,31 @@ class Settings(BaseSettings):
                 "ALLOWED_HOSTS entries must be bare lowercase hostnames (no scheme, port or path)"
             )
         return value
+
+    @model_validator(mode="after")
+    def _validate_google_oauth(self) -> Self:
+        values = (self.google_client_id, self.google_client_secret, self.google_redirect_uri)
+        if all(value is None for value in values):
+            return self
+        if any(value is None or value == "" for value in values) or not (
+            self.google_client_secret and self.google_client_secret.get_secret_value()
+        ):
+            raise ValueError(
+                "GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET and GOOGLE_REDIRECT_URI"
+                " must be set together"
+            )
+        uri = urlsplit(self.google_redirect_uri or "")
+        local_http = (
+            uri.scheme == "http"
+            and uri.hostname in ("localhost", "127.0.0.1")
+            and self.environment is not Environment.PRODUCTION
+        )
+        if (uri.scheme != "https" and not local_http) or not uri.hostname or uri.fragment:
+            raise ValueError(
+                "GOOGLE_REDIRECT_URI must be an absolute https URL without a fragment"
+                " (http://localhost is allowed outside production)"
+            )
+        return self
 
     @model_validator(mode="after")
     def _enforce_production_hardening(self) -> Self:
