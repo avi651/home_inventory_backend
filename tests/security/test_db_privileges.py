@@ -70,3 +70,27 @@ async def test_runtime_role_cannot_alter_schema_objects(
         await conn.execution_options(isolation_level="AUTOCOMMIT")
         with pytest.raises(ProgrammingError, match=r"must be owner|permission denied"):
             await conn.execute(text(statement))
+
+
+async def test_runtime_role_has_dml_but_not_ownership_on_every_app_table(
+    migrated_database: None, engine: AsyncEngine
+) -> None:
+    """Covers tables added by later migrations automatically."""
+    async with engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                text(
+                    # has_table_privilege('A,B') is true if ANY is held, so check each one.
+                    "SELECT t.tablename, t.tableowner = current_user, bool_and("
+                    "has_table_privilege(current_user, quote_ident(t.tablename), p)) "
+                    "FROM pg_tables t, unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE']) AS p "
+                    "WHERE t.schemaname = 'public' AND t.tablename <> 'alembic_version' "
+                    "GROUP BY t.tablename, t.tableowner"
+                )
+            )
+        ).all()
+
+    assert {"users", "auth_sessions", "refresh_tokens"} <= {row[0] for row in rows}
+    for table, is_owner, has_dml in rows:
+        assert has_dml, f"runtime role lacks DML on {table}"
+        assert not is_owner, f"runtime role owns {table}"

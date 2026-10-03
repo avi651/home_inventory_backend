@@ -103,7 +103,13 @@ async def db_session(migrated_database: None, engine: AsyncEngine) -> AsyncItera
     """
     async with engine.connect() as conn:
         outer = await conn.begin()
-        session = AsyncSession(bind=conn, join_transaction_mode="create_savepoint")
+        # Same session options as the production factory (create_session_factory).
+        session = AsyncSession(
+            bind=conn,
+            join_transaction_mode="create_savepoint",
+            expire_on_commit=False,
+            autoflush=False,
+        )
         try:
             yield session
         finally:
