@@ -11,7 +11,8 @@ from app.core.config import Environment, Settings
 from app.core.database import create_db_engine
 from app.main import create_app
 
-TEST_ENV_FILE = Path(__file__).resolve().parent.parent / ".env.test"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+TEST_ENV_FILE = PROJECT_ROOT / ".env.test"
 
 
 def load_test_settings(**overrides: Any) -> Settings:

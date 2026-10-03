@@ -18,6 +18,11 @@ target-version = "py314"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "S", "ASYNC", "SIM", "RUF", "PT"]
 
+[tool.ruff.lint.isort]
+# The local alembic/ migrations folder must not shadow the alembic package.
+known-third-party = ["alembic"]
+known-first-party = ["app", "tests"]
+
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "S105", "S106"]
 
