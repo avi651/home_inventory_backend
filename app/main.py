@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import health
 from app.core.config import Settings, get_settings
+from app.core.logging import install_log_redaction
 from app.core.security import SecurityHeadersMiddleware
 from app.exceptions.handlers import register_exception_handlers
 
@@ -12,6 +13,7 @@ DOCS_URL, REDOC_URL, OPENAPI_URL = "/docs", "/redoc", "/openapi.json"
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Application factory. Run with: uvicorn app.main:create_app --factory"""
     settings = settings or get_settings()
+    install_log_redaction()
     docs = settings.docs_enabled
 
     app = FastAPI(
