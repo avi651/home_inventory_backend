@@ -35,3 +35,38 @@ async def test_runtime_role_cannot_run_ddl(engine: AsyncEngine, ddl: str) -> Non
         await conn.execution_options(isolation_level="AUTOCOMMIT")
         with pytest.raises(ProgrammingError, match="permission denied"):
             await conn.execute(text(ddl))
+
+
+async def test_runtime_role_can_read_and_write_users(
+    migrated_database: None, engine: AsyncEngine
+) -> None:
+    async with engine.connect() as conn:
+        privileges = (
+            await conn.execute(
+                text(
+                    "SELECT array_agg(p ORDER BY p) FROM unnest("
+                    "ARRAY['SELECT','INSERT','UPDATE','DELETE']) AS p "
+                    "WHERE has_table_privilege(current_user, 'users', p)"
+                )
+            )
+        ).scalar_one()
+
+    assert privileges == ["DELETE", "INSERT", "SELECT", "UPDATE"]
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "DROP TABLE users",
+        "ALTER TABLE users ADD COLUMN is_admin boolean",
+        "ALTER TABLE users DROP CONSTRAINT ck_users_auth_provider_fields",
+        "TRUNCATE users",
+    ],
+)
+async def test_runtime_role_cannot_alter_schema_objects(
+    migrated_database: None, engine: AsyncEngine, statement: str
+) -> None:
+    async with engine.connect() as conn:
+        await conn.execution_options(isolation_level="AUTOCOMMIT")
+        with pytest.raises(ProgrammingError, match=r"must be owner|permission denied"):
+            await conn.execute(text(statement))

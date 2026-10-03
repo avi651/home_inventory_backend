@@ -3,10 +3,13 @@ from collections.abc import Iterator
 
 import pytest
 from alembic import command
+from alembic.autogenerate import compare_metadata
+from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from sqlalchemy import Engine, create_engine, inspect, text
 
 from app.core.config import Settings
+from app.models import Base
 from tests.conftest import PROJECT_ROOT, alembic_config
 
 ALEMBIC_INI = PROJECT_ROOT / "alembic.ini"
@@ -73,3 +76,16 @@ def test_migrations_run_as_migrator_role(test_settings: Settings, migrator_engin
         ).scalar_one()
 
     assert owner == "home_inventory_migrator"
+
+
+def test_models_and_migrations_are_in_sync(
+    test_settings: Settings, migrator_engine: Engine
+) -> None:
+    """Fails when a model changes without a matching migration."""
+    command.upgrade(alembic_config(test_settings), "head")
+
+    with migrator_engine.connect() as conn:
+        context = MigrationContext.configure(conn, opts={"compare_type": True})
+        diff = compare_metadata(context, Base.metadata)
+
+    assert diff == []
