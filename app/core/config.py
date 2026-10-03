@@ -1,4 +1,5 @@
 from enum import StrEnum
+from functools import lru_cache
 from typing import Literal, Self
 
 from pydantic import Field, SecretStr, field_validator, model_validator
@@ -82,3 +83,8 @@ class Settings(BaseSettings):
         if insecure:
             raise ValueError("production CORS origins must use https")
         return self
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()  # values come from the environment / .env
