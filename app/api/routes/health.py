@@ -6,6 +6,9 @@ from app.services.health_service import database_is_ready
 
 router = APIRouter(tags=["health"])
 
+# Infrastructure probes: reachable over plain HTTP and by instance address in production.
+PROBE_PATHS = frozenset({"/health", "/health/ready"})
+
 
 @router.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:

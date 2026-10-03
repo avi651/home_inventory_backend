@@ -298,13 +298,20 @@ user-owned endpoint gets an explicit cross-user test.
   `.gitignore` blocks `*.p8`, `*.pem`, `*.key`, `*service-account*.json`.
 - Backend → APNs/FCM uses standard TLS validation; never pin Apple/Google endpoints.
 
-### Transport (Phase 2)
+### Transport (Phase 2 ✅ — deployment details in README "Production deployment")
 - Production: plain-HTTP requests rejected (400 `https_required`), not redirected — a redirect
-  happens after the token was already sent in cleartext. Health endpoints exempt for internal probes.
-- `TrustedHostMiddleware` with `ALLOWED_HOSTS` (required, no `*`, in production).
-- HSTS in production (Phase 1 ✅).
-- uvicorn `--proxy-headers --forwarded-allow-ips=<LB range>` only; never trust `X-Forwarded-*`
-  from arbitrary clients.
+  happens after the token was already sent in cleartext, and a proxy misconfiguration then fails
+  closed instead of looping. Exempt: exactly `/health` and `/health/ready` (internal probes).
+- The app decides "HTTPS" only from the ASGI scheme. It never reads `X-Forwarded-*`/`Forwarded`
+  itself; uvicorn's `--proxy-headers --forwarded-allow-ips=<LB range>` rewrites the scheme (and
+  client IP) only for requests whose TCP peer is the load balancer. Never use
+  `--forwarded-allow-ips='*'`.
+- Host validation: Starlette `TrustedHostMiddleware` (via `TrustedHostGuard`, API error envelope
+  `invalid_host`, `www_redirect` off) with `ALLOWED_HOSTS`. Production: required, no `*` or
+  `*.domain` patterns, bare lowercase hostnames only (fail fast at startup). Matching uses the
+  `Host` header only (port ignored; `X-Forwarded-Host` ignored). Probe paths are exempt because
+  health checks address instances by IP. Outside production it is enforced only if configured.
+- HSTS in production (Phase 1 ✅); rejections also carry the security headers.
 - Clients: iOS ATS on; Android `cleartextTrafficPermitted="false"`.
 
 ### Mobile certificate pinning (documented Phase 2, implemented in the mobile apps)

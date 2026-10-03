@@ -35,7 +35,7 @@ def build(**overrides: Any) -> Settings:
 @pytest.fixture(autouse=True)
 def isolated_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     """Ensure real environment variables never leak into these tests."""
-    for name in valid_settings():
+    for name in [*valid_settings(), "allowed_hosts"]:
         monkeypatch.delenv(name.upper(), raising=False)
     monkeypatch.delenv("DEBUG", raising=False)
 
@@ -62,7 +62,9 @@ class TestValidConfiguration:
         assert build(environment="local").docs_enabled is True
 
     def test_docs_disabled_in_production(self) -> None:
-        assert build(environment="production").docs_enabled is False
+        settings = build(environment="production", allowed_hosts=["api.example.com"])
+
+        assert settings.docs_enabled is False
 
 
 class TestJwtSecret:
@@ -165,7 +167,11 @@ class TestProductionHardening:
             build(environment="production", cors_origins=["http://example.com"])
 
     def test_production_accepts_https_origins(self) -> None:
-        settings = build(environment="production", cors_origins=["https://app.example.com"])
+        settings = build(
+            environment="production",
+            allowed_hosts=["api.example.com"],
+            cors_origins=["https://app.example.com"],
+        )
 
         assert settings.cors_origins == ["https://app.example.com"]
 
@@ -173,3 +179,66 @@ class TestProductionHardening:
         # The API uses bearer credentials; "*" is never a safe default.
         with pytest.raises(ValidationError, match="CORS"):
             build(environment="local", cors_origins=["*"])
+
+
+class TestAllowedHosts:
+    def test_defaults_to_no_host_restriction_outside_production(self) -> None:
+        assert build().allowed_hosts == []
+
+    def test_local_may_configure_explicit_hosts(self) -> None:
+        settings = build(allowed_hosts=["localhost", "127.0.0.1"])
+
+        assert settings.allowed_hosts == ["localhost", "127.0.0.1"]
+
+    def test_production_requires_allowed_hosts(self) -> None:
+        with pytest.raises(ValidationError, match="ALLOWED_HOSTS"):
+            build(environment="production")
+
+    @pytest.mark.parametrize("hosts", [["*"], ["api.example.com", "*"], ["*.example.com"]])
+    def test_production_rejects_wildcards(self, hosts: list[str]) -> None:
+        with pytest.raises(ValidationError, match="wildcard"):
+            build(environment="production", allowed_hosts=hosts)
+
+    def test_bare_wildcard_rejected_everywhere(self) -> None:
+        # "*" would silently disable host validation.
+        with pytest.raises(ValidationError, match="wildcard"):
+            build(environment="local", allowed_hosts=["*"])
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "https://api.example.com",
+            "api.example.com:443",
+            "api.example.com/",
+            "API.example.com",
+            " api.example.com",
+            "",
+        ],
+    )
+    def test_entries_must_be_bare_lowercase_hostnames(self, host: str) -> None:
+        with pytest.raises(ValidationError, match="hostname"):
+            build(environment="production", allowed_hosts=[host])
+
+    def test_production_accepts_explicit_hosts(self) -> None:
+        settings = build(environment="production", allowed_hosts=["api.example.com"])
+
+        assert settings.allowed_hosts == ["api.example.com"]
+
+    def test_https_required_only_in_production(self) -> None:
+        assert build().https_required is False
+        assert build(environment="test").https_required is False
+        assert build(environment="production", allowed_hosts=["api.example.com"]).https_required
+
+    def test_reads_json_list_from_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ALLOWED_HOSTS", '["api.example.com"]')
+        values = valid_settings(environment="production")
+
+        settings = Settings(_env_file=None, **values)
+
+        assert settings.allowed_hosts == ["api.example.com"]
+
+    def test_validation_error_does_not_echo_configuration(self) -> None:
+        with pytest.raises(ValidationError) as exc_info:
+            build(environment="production", allowed_hosts=["https://internal-lb.corp:8443"])
+
+        assert "internal-lb.corp" not in str(exc_info.value)

@@ -11,7 +11,7 @@ from app.core.config import Settings, get_settings
 from app.core.database import create_db_engine, create_session_factory
 from app.core.logging import install_log_redaction
 from app.core.rate_limit import DEFAULT_AUTH_RATE_LIMITS, InMemoryRateLimiter
-from app.core.security import SecurityHeadersMiddleware
+from app.core.security import HTTPSOnlyMiddleware, SecurityHeadersMiddleware, TrustedHostGuard
 from app.core.tokens import AccessTokenService
 from app.exceptions.handlers import register_exception_handlers
 
@@ -61,7 +61,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             allow_headers=["Authorization", "Content-Type"],
             max_age=600,
         )
-    # Added last so it is outermost and also covers CORS preflight responses.
+    # Transport checks run before CORS and routing, so a rejected request touches nothing.
+    if settings.https_required:
+        app.add_middleware(HTTPSOnlyMiddleware, exempt_paths=health.PROBE_PATHS)
+    if settings.allowed_hosts:
+        app.add_middleware(
+            TrustedHostGuard,
+            allowed_hosts=settings.allowed_hosts,
+            exempt_paths=health.PROBE_PATHS,
+        )
+    # Added last so it is outermost and also covers CORS preflight and rejection responses.
     app.add_middleware(
         SecurityHeadersMiddleware,
         settings=settings,

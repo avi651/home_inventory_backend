@@ -1,9 +1,18 @@
 import pytest
 from fastapi import FastAPI
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 from pydantic import BaseModel, Field
 
 from tests.conftest import AppFactory, make_client
+
+PRODUCTION = {"environment": "production", "allowed_hosts": ["api.example.com"]}
+
+
+def https_client(app: FastAPI) -> AsyncClient:
+    """Production rejects plain HTTP and unknown hosts (Step 7), so talk to it as deployed."""
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    return AsyncClient(transport=transport, base_url="https://api.example.com")
+
 
 EXPECTED_SECURITY_HEADERS = {
     "x-content-type-options": "nosniff",
@@ -61,7 +70,7 @@ class TestSecurityHeaders:
         assert "strict-transport-security" not in response.headers
 
     async def test_hsts_in_production(self, app_with_settings: AppFactory) -> None:
-        async with make_client(app_with_settings(environment="production")) as c:
+        async with https_client(app_with_settings(**PRODUCTION)) as c:
             response = await c.get("/health")
 
         assert response.headers["strict-transport-security"].startswith("max-age=")
@@ -124,7 +133,7 @@ class TestApiDocsExposure:
     async def test_docs_hidden_in_production(
         self, app_with_settings: AppFactory, path: str
     ) -> None:
-        async with make_client(app_with_settings(environment="production")) as c:
+        async with https_client(app_with_settings(**PRODUCTION)) as c:
             response = await c.get(path)
 
         assert response.status_code == 404

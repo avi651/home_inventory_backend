@@ -1,4 +1,8 @@
+from collections.abc import Sequence
+
 from starlette.datastructures import MutableHeaders
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.core.config import Environment, Settings
@@ -46,3 +50,76 @@ class SecurityHeadersMiddleware:
             await send(message)
 
         await self.app(scope, receive, send_with_headers)
+
+
+def _error(code: str, message: str) -> JSONResponse:
+    # Same envelope as the exception handlers; fixed text, nothing from the request echoed.
+    return JSONResponse({"error": {"code": code, "message": message}}, status_code=400)
+
+
+# Exactly one acceptable scheme per scope type ("wss" on an HTTP request is not HTTPS).
+_SECURE_SCHEMES = {"http": "https", "websocket": "wss"}
+
+
+class HTTPSOnlyMiddleware:
+    """Rejects (never redirects) plain-HTTP requests, except the exact probe paths.
+
+    Trusts only scope["scheme"]. Behind the load balancer that is set by uvicorn's
+    --proxy-headers from X-Forwarded-Proto, and only for peers in --forwarded-allow-ips; this
+    middleware never reads forwarded headers itself. Rejecting instead of redirecting means a
+    misconfigured proxy fails closed with a 400 rather than looping, and a token sent over
+    HTTP is refused rather than silently honoured.
+    """
+
+    def __init__(self, app: ASGIApp, exempt_paths: frozenset[str]) -> None:
+        self.app = app
+        self.exempt_paths = exempt_paths
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        secure_scheme = _SECURE_SCHEMES.get(scope["type"])
+        if (
+            secure_scheme is not None
+            and scope["scheme"] != secure_scheme
+            and scope["path"] not in self.exempt_paths
+        ):
+            await _error("https_required", "HTTPS is required")(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
+class TrustedHostGuard:
+    """Starlette's TrustedHostMiddleware with the API error envelope and probe-path exemption.
+
+    Matching (Host header only, port ignored) is Starlette's; X-Forwarded-Host is never used.
+    Probes are exempt because health checks address an instance by IP and their responses do
+    not depend on Host.
+    """
+
+    _VALIDATED = "home_inventory.host_validated"
+
+    def __init__(
+        self, app: ASGIApp, allowed_hosts: Sequence[str], exempt_paths: frozenset[str]
+    ) -> None:
+        self.app = app
+        self.exempt_paths = exempt_paths
+        self._checker = TrustedHostMiddleware(
+            self._mark_validated, allowed_hosts=allowed_hosts, www_redirect=False
+        )
+
+    async def _mark_validated(self, scope: Scope, receive: Receive, send: Send) -> None:
+        scope[self._VALIDATED] = True
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] not in ("http", "websocket") or scope["path"] in self.exempt_paths:
+            await self.app(scope, receive, send)
+            return
+
+        # Starlette answers a bad host itself (plain text); swallow that answer and send ours.
+        async def discard(_: Message) -> None:
+            return None
+
+        await self._checker(scope, receive, discard)
+        if not scope.pop(self._VALIDATED, False):
+            await _error("invalid_host", "Invalid host")(scope, receive, send)
+            return
+        await self.app(scope, receive, send)

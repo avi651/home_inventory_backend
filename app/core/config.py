@@ -1,3 +1,4 @@
+import re
 from enum import StrEnum
 from functools import lru_cache
 from typing import Literal, Self
@@ -9,6 +10,8 @@ MIN_JWT_SECRET_LENGTH = 32
 MIN_JWT_SECRET_DISTINCT_CHARS = 10
 PLACEHOLDER_MARKERS = ("changeme", "change-me", "placeholder", "example", "generate", "<", ">")
 REQUIRED_DB_SCHEME = "postgresql+psycopg://"
+# A bare lowercase hostname or IP (optionally a "*.domain" pattern): no scheme, port or path.
+_ALLOWED_HOST = re.compile(r"(\*\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?")
 
 
 class Environment(StrEnum):
@@ -40,10 +43,17 @@ class Settings(BaseSettings):
     jwt_audience: str = Field(min_length=1)
 
     cors_origins: list[str] = []
+    # Host names this API answers to (JSON list). Required in production; when empty outside
+    # production, Host is not checked (e.g. a phone reaching a dev machine by LAN IP).
+    allowed_hosts: list[str] = []
 
     @property
     def docs_enabled(self) -> bool:
         return self.environment is not Environment.PRODUCTION
+
+    @property
+    def https_required(self) -> bool:
+        return self.environment is Environment.PRODUCTION
 
     @field_validator("jwt_secret")
     @classmethod
@@ -73,6 +83,18 @@ class Settings(BaseSettings):
             raise ValueError("wildcard CORS origin is not allowed")
         return value
 
+    @field_validator("allowed_hosts")
+    @classmethod
+    def _validate_allowed_hosts(cls, value: list[str]) -> list[str]:
+        # Messages never quote the entry: it may name internal infrastructure.
+        if "*" in value:
+            raise ValueError("wildcard ALLOWED_HOSTS entry '*' is not allowed")
+        if not all(_ALLOWED_HOST.fullmatch(host) for host in value):
+            raise ValueError(
+                "ALLOWED_HOSTS entries must be bare lowercase hostnames (no scheme, port or path)"
+            )
+        return value
+
     @model_validator(mode="after")
     def _enforce_production_hardening(self) -> Self:
         if self.environment is not Environment.PRODUCTION:
@@ -82,6 +104,10 @@ class Settings(BaseSettings):
         insecure = [origin for origin in self.cors_origins if not origin.startswith("https://")]
         if insecure:
             raise ValueError("production CORS origins must use https")
+        if not self.allowed_hosts:
+            raise ValueError("ALLOWED_HOSTS must be set in production")
+        if any("*" in host for host in self.allowed_hosts):
+            raise ValueError("wildcard ALLOWED_HOSTS patterns are not allowed in production")
         return self
 
 
