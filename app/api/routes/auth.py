@@ -42,6 +42,18 @@ async def login(body: LoginRequest, auth: AuthServiceDep) -> AuthResponse:
 
 
 @router.post(
+    "/guest",
+    status_code=status.HTTP_201_CREATED,
+    response_model=AuthResponse,
+    dependencies=[rate_limited("guest_per_ip")],
+)
+async def guest(auth: AuthServiceDep) -> AuthResponse:
+    """Always a new guest user: takes no input, so a client cannot choose who it becomes."""
+    user, pair = await auth.sign_in_as_guest()
+    return AuthResponse.build(user, pair)
+
+
+@router.post(
     "/refresh",
     response_model=TokenResponse,
     dependencies=[rate_limited("refresh_per_ip")],

@@ -30,3 +30,14 @@ async def registered_tokens(
 
 def bearer(access_token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {access_token}"}
+
+
+async def guest(client: AsyncClient) -> Response:
+    return await client.post(f"{API}/guest")
+
+
+async def guest_tokens(client: AsyncClient) -> dict[str, Any]:
+    response = await guest(client)
+    assert response.status_code == 201, response.text
+    body: dict[str, Any] = response.json()
+    return body

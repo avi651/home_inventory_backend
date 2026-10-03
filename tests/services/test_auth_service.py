@@ -1,3 +1,4 @@
+import uuid
 from datetime import timedelta
 
 import pytest
@@ -15,10 +16,12 @@ from app.exceptions.errors import (
     RegistrationUnavailableError,
     WeakPasswordError,
 )
+from app.models.auth_session import AuthSession
 from app.models.user import User
 from app.models.user_identity import IdentityProvider, UserIdentity
 from app.services.auth_service import AuthService
-from app.services.session_service import SessionService
+from app.services.identity_service import IdentityService
+from app.services.session_service import SessionService, TokenPair
 from tests.conftest import GENEROUS_RATE_LIMITS
 from tests.support.clock import FrozenClock
 from tests.support.factories import create_user
@@ -353,6 +356,7 @@ class TestLogin:
             login_per_ip=GENEROUS_RATE_LIMITS.login_per_ip,
             login_per_account=RateLimit(limit=2, window=timedelta(minutes=15)),
             refresh_per_ip=GENEROUS_RATE_LIMITS.refresh_per_ip,
+            guest_per_ip=GENEROUS_RATE_LIMITS.guest_per_ip,
         )
         service = build_service(db_session, test_settings, clock, hasher, limits)
         await service.register(EMAIL, STRONG_PASSWORD)
@@ -385,3 +389,80 @@ async def test_existing_factory_users_are_unaffected(db_session: AsyncSession) -
     assert user.is_guest is True
     owned = select(func.count()).where(UserIdentity.user_id == user.id)
     assert (await db_session.execute(owned)).scalar_one() == 0
+
+
+class TestGuest:
+    async def test_creates_active_guest_with_no_identities_and_a_session(
+        self, service: AuthService, db_session: AsyncSession
+    ) -> None:
+        user, pair = await service.sign_in_as_guest()
+
+        assert (user.is_guest, user.is_active) == (True, True)
+        assert user.identities == []
+        owned = select(func.count()).where(UserIdentity.user_id == user.id)
+        assert (await db_session.execute(owned)).scalar_one() == 0
+        auth_session = await db_session.get(AuthSession, pair.session_id)
+        assert auth_session is not None
+        assert auth_session.user_id == user.id
+
+    async def test_session_comes_from_session_service_for_the_new_user(
+        self, service: AuthService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        started: list[uuid.UUID] = []
+        original = service._sessions.start
+
+        async def spy(user_id: uuid.UUID) -> TokenPair:
+            started.append(user_id)
+            return await original(user_id)
+
+        monkeypatch.setattr(service._sessions, "start", spy)
+
+        user, pair = await service.sign_in_as_guest()
+
+        assert started == [user.id]
+        assert pair.access_token
+        assert pair.refresh_token
+
+    async def test_user_and_session_are_created_atomically(
+        self, service: AuthService, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        before = await count_users(db_session)
+
+        async def fail(*_: object) -> None:
+            raise RuntimeError("session creation failed")
+
+        monkeypatch.setattr(service._sessions, "start", fail)
+
+        with pytest.raises(RuntimeError):
+            await service.sign_in_as_guest()
+
+        assert await count_users(db_session) == before
+
+    async def test_each_call_is_a_new_user(self, service: AuthService) -> None:
+        first, first_pair = await service.sign_in_as_guest()
+        second, second_pair = await service.sign_in_as_guest()
+
+        assert first.id != second.id
+        assert first_pair.session_id != second_pair.session_id
+
+    async def test_later_upgrade_keeps_the_same_user_and_sessions(
+        self, service: AuthService, db_session: AsyncSession, hasher: PasswordHasher
+    ) -> None:
+        """Ownership is by user_id: linking an identity later keeps the guest's data attached."""
+        user, pair = await service.sign_in_as_guest()
+
+        identity = await IdentityService(db_session).link(
+            user.id,
+            IdentityProvider.EMAIL,
+            EMAIL,
+            password_hash=await hasher.hash(STRONG_PASSWORD),
+        )
+        user.is_guest = False
+        await db_session.commit()
+
+        assert identity.user_id == user.id
+        auth_session = await db_session.get(AuthSession, pair.session_id)
+        assert auth_session is not None
+        assert auth_session.user_id == user.id
+        logged_in, _ = await service.login(EMAIL, STRONG_PASSWORD)
+        assert logged_in.id == user.id

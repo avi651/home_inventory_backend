@@ -33,6 +33,7 @@ class AuthRateLimits:
     login_per_ip: RateLimit
     login_per_account: RateLimit
     refresh_per_ip: RateLimit
+    guest_per_ip: RateLimit
 
 
 DEFAULT_AUTH_RATE_LIMITS = AuthRateLimits(
@@ -40,6 +41,7 @@ DEFAULT_AUTH_RATE_LIMITS = AuthRateLimits(
     login_per_ip=RateLimit(limit=10, window=timedelta(minutes=1)),
     login_per_account=RateLimit(limit=5, window=timedelta(minutes=15)),
     refresh_per_ip=RateLimit(limit=30, window=timedelta(minutes=1)),
+    guest_per_ip=RateLimit(limit=10, window=timedelta(hours=1)),
 )
 
 

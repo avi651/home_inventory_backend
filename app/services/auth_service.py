@@ -23,8 +23,8 @@ logger = logging.getLogger(__name__)
 
 
 class AuthService:
-    """Email/password registration and login. Sessions/tokens are delegated to SessionService;
-    credentials are found and attached through IdentityService (user_identities, D1).
+    """Email/password registration and login, and guest sign-in. Sessions/tokens are delegated
+    to SessionService; credentials are found and attached through IdentityService (D1).
 
     Logs carry user ids only: never emails, passwords, hashes or tokens.
     """
@@ -72,6 +72,22 @@ class AuthService:
             await self._db.rollback()
             raise
         logger.info("user registered user_id=%s", user.id)
+        return user, pair
+
+    async def sign_in_as_guest(self) -> tuple[User, TokenPair]:
+        """A brand-new guest: no identities and no credentials, just a session (ARCHITECTURE.md
+        §3). Upgrading later links an identity to this same user id, so its data stays attached.
+        """
+        # identities=[] marks the (empty) collection as loaded: the user view needs no query.
+        user = User(is_guest=True, identities=[])
+        try:
+            await self._users.add(user)
+            # Commits user and session together; any failure leaves neither behind.
+            pair = await self._sessions.start(user.id)
+        except BaseException:
+            await self._db.rollback()
+            raise
+        logger.info("guest user created user_id=%s session_id=%s", user.id, pair.session_id)
         return user, pair
 
     async def login(self, email: str, password: str) -> tuple[User, TokenPair]:
