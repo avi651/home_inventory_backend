@@ -60,6 +60,7 @@ def get_auth_service(
     db: DbSession,
     sessions: SessionServiceDep,
     hasher: Annotated[PasswordHasher, Depends(get_password_hasher)],
+    clock: Annotated[Clock, Depends(get_clock)],
 ) -> AuthService:
     return AuthService(
         db,
@@ -67,6 +68,7 @@ def get_auth_service(
         sessions=sessions,
         rate_limiter=request.app.state.rate_limiter,
         rate_limits=request.app.state.rate_limits,
+        clock=clock,
     )
 
 

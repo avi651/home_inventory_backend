@@ -1,8 +1,8 @@
 import logging
 
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.clock import Clock, utc_now
 from app.core.emails import normalize_email
 from app.core.password_policy import check_password
 from app.core.passwords import PasswordHasher
@@ -13,22 +13,18 @@ from app.exceptions.errors import (
     RegistrationUnavailableError,
     WeakPasswordError,
 )
-from app.models.user import AuthProvider, User
+from app.models.user import User
+from app.models.user_identity import IdentityProvider
 from app.repositories.user_repository import UserRepository
+from app.services.identity_service import IdentityAlreadyLinkedError, IdentityService
 from app.services.session_service import SessionService, TokenPair
 
 logger = logging.getLogger(__name__)
 
-_EMAIL_UNIQUE_CONSTRAINT = "uq_users_email"
-
-
-def _violated_constraint(exc: IntegrityError) -> str | None:
-    diag = getattr(exc.orig, "diag", None)
-    return getattr(diag, "constraint_name", None)
-
 
 class AuthService:
-    """Email/password registration and login. Sessions/tokens are delegated to SessionService.
+    """Email/password registration and login. Sessions/tokens are delegated to SessionService;
+    credentials are found and attached through IdentityService (user_identities, D1).
 
     Logs carry user ids only: never emails, passwords, hashes or tokens.
     """
@@ -41,13 +37,16 @@ class AuthService:
         sessions: SessionService,
         rate_limiter: RateLimiter,
         rate_limits: AuthRateLimits,
+        clock: Clock = utc_now,
     ) -> None:
         self._db = db
         self._hasher = hasher
         self._sessions = sessions
         self._rate_limiter = rate_limiter
         self._rate_limits = rate_limits
+        self._clock = clock
         self._users = UserRepository(db)
+        self._identities = IdentityService(db)
 
     async def register(self, email: str, password: str) -> tuple[User, TokenPair]:
         email = normalize_email(email)
@@ -55,17 +54,20 @@ class AuthService:
             raise WeakPasswordError(violations)
         # Hash before checking for duplicates: a taken email costs the same time as a new one.
         password_hash = await self._hasher.hash(password)
-        user = User(auth_provider=AuthProvider.EMAIL, email=email, password_hash=password_hash)
+        user = User()
         try:
             await self._users.add(user)
-            # Commits user and session together; any failure leaves neither behind.
+            # The identity's unique constraint (not a prior SELECT) decides: race-free and
+            # enumeration-safe.
+            await self._identities.link(
+                user.id, IdentityProvider.EMAIL, email, password_hash=password_hash
+            )
+            await self._db.refresh(user, attribute_names=["identities"])
+            # Commits user, identity and session together; any failure leaves none behind.
             pair = await self._sessions.start(user.id)
-        except IntegrityError as exc:
+        except IdentityAlreadyLinkedError:
             await self._db.rollback()
-            # The unique constraint (not a prior SELECT) decides: race-free and enumeration-safe.
-            if _violated_constraint(exc) == _EMAIL_UNIQUE_CONSTRAINT:
-                raise RegistrationUnavailableError from None
-            raise
+            raise RegistrationUnavailableError from None
         except BaseException:
             await self._db.rollback()
             raise
@@ -86,18 +88,20 @@ class AuthService:
             logger.warning("login throttled for an account (per-account limit)")
             raise RateLimitedError(limit.retry_after)
 
-        user = await self._users.get_password_user(email)
-        if user is None or user.password_hash is None:
+        identity = await self._identities.resolve(IdentityProvider.EMAIL, email)
+        if identity is None or identity.password_hash is None:
             await self._hasher.verify_dummy(password)  # same cost as a real verification
             logger.info("login failed")
             raise InvalidCredentialsError
+        user = identity.user
         # Verify before checking is_active: an inactive account must not answer faster.
-        if not await self._hasher.verify(user.password_hash, password) or not user.is_active:
+        if not await self._hasher.verify(identity.password_hash, password) or not user.is_active:
             logger.info("login failed user_id=%s", user.id)
             raise InvalidCredentialsError
 
-        if self._hasher.needs_rehash(user.password_hash):
-            user.password_hash = await self._hasher.hash(password)  # committed with the session
+        if self._hasher.needs_rehash(identity.password_hash):
+            identity.password_hash = await self._hasher.hash(password)
+        identity.last_used_at = self._clock()  # committed with the session
         try:
             pair = await self._sessions.start(user.id)
         except BaseException:

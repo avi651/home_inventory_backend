@@ -67,4 +67,4 @@ async def logout_all(principal: CurrentPrincipal, sessions: SessionServiceDep) -
 
 @router.get("/me", response_model=UserRead)
 async def me(principal: CurrentPrincipal) -> UserRead:
-    return UserRead.model_validate(principal.user)
+    return UserRead.from_user(principal.user)

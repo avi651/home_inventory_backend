@@ -59,7 +59,8 @@ async def test_runtime_role_can_read_and_write_users(
     [
         "DROP TABLE users",
         "ALTER TABLE users ADD COLUMN is_admin boolean",
-        "ALTER TABLE users DROP CONSTRAINT ck_users_auth_provider_fields",
+        "ALTER TABLE user_identities DROP CONSTRAINT ck_user_identities_provider_fields",
+        "ALTER TABLE user_identities DROP CONSTRAINT uq_user_identities_provider_subject",
         "TRUNCATE users",
     ],
 )
@@ -90,7 +91,9 @@ async def test_runtime_role_has_dml_but_not_ownership_on_every_app_table(
             )
         ).all()
 
-    assert {"users", "auth_sessions", "refresh_tokens"} <= {row[0] for row in rows}
+    assert {"users", "user_identities", "auth_sessions", "refresh_tokens"} <= {
+        row[0] for row in rows
+    }
     for table, is_owner, has_dml in rows:
         assert has_dml, f"runtime role lacks DML on {table}"
         assert not is_owner, f"runtime role owns {table}"

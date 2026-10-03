@@ -3,6 +3,7 @@ from datetime import datetime
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models.auth_session import AuthSession, SessionRevokeReason
 from app.models.user import User
@@ -29,10 +30,14 @@ class SessionRepository:
     async def get_with_user(
         self, *, session_id: uuid.UUID, user_id: uuid.UUID
     ) -> tuple[AuthSession, User] | None:
-        """Both ids must match one row: a token can never borrow another user's session."""
+        """Both ids must match one row: a token can never borrow another user's session.
+
+        The user's identities are loaded too: the principal's user view is derived from them.
+        """
         result = await self._db.execute(
             select(AuthSession, User)
             .join(User, User.id == AuthSession.user_id)
+            .options(selectinload(User.identities))
             .where(AuthSession.id == session_id, AuthSession.user_id == user_id)
         )
         row = result.one_or_none()

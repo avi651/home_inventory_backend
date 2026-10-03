@@ -15,7 +15,8 @@ from app.exceptions.errors import (
     RegistrationUnavailableError,
     WeakPasswordError,
 )
-from app.models.user import AuthProvider, User
+from app.models.user import User
+from app.models.user_identity import IdentityProvider, UserIdentity
 from app.services.auth_service import AuthService
 from app.services.session_service import SessionService
 from tests.conftest import GENEROUS_RATE_LIMITS
@@ -50,6 +51,7 @@ def build_service(
         sessions=sessions,
         rate_limiter=InMemoryRateLimiter(clock=clock),
         rate_limits=limits,
+        clock=clock,
     )
 
 
@@ -64,38 +66,80 @@ async def count_users(db: AsyncSession) -> int:
     return (await db.execute(select(func.count()).select_from(User))).scalar_one()
 
 
+async def count_identities(db: AsyncSession) -> int:
+    return (await db.execute(select(func.count()).select_from(UserIdentity))).scalar_one()
+
+
+def email_identity(user: User) -> UserIdentity:
+    (identity,) = [i for i in user.identities if i.provider is IdentityProvider.EMAIL]
+    return identity
+
+
+async def add_oauth_user(
+    db: AsyncSession, provider: IdentityProvider, subject: str, email: str
+) -> User:
+    user = User()
+    db.add(user)
+    await db.flush()
+    db.add(UserIdentity(user_id=user.id, provider=provider, subject=subject, email=email))
+    await db.flush()
+    return user
+
+
 class TestRegister:
-    async def test_creates_email_user_with_argon2id_hash(
+    async def test_creates_user_with_one_email_identity_holding_the_argon2id_hash(
         self, service: AuthService, hasher: PasswordHasher
     ) -> None:
         user, pair = await service.register("Alice@Example.com", STRONG_PASSWORD)
 
-        assert user.auth_provider is AuthProvider.EMAIL
-        assert user.email == EMAIL
-        assert user.password_hash is not None
-        assert user.password_hash.startswith("$argon2id$")
-        assert STRONG_PASSWORD not in user.password_hash
-        assert await hasher.verify(user.password_hash, STRONG_PASSWORD)
+        assert user.is_guest is False
+        assert len(user.identities) == 1
+        identity = email_identity(user)
+        assert identity.subject == identity.email == EMAIL
+        assert identity.password_hash is not None
+        assert identity.password_hash.startswith("$argon2id$")
+        assert STRONG_PASSWORD not in identity.password_hash
+        assert await hasher.verify(identity.password_hash, STRONG_PASSWORD)
         assert pair.refresh_token
         assert pair.access_token
+
+    async def test_registration_is_resolvable_through_user_identities(
+        self, service: AuthService, db_session: AsyncSession
+    ) -> None:
+        user, _ = await service.register(EMAIL, STRONG_PASSWORD)
+
+        owner = (
+            await db_session.execute(
+                select(UserIdentity.user_id).where(
+                    UserIdentity.provider == IdentityProvider.EMAIL, UserIdentity.subject == EMAIL
+                )
+            )
+        ).scalar_one()
+        assert owner == user.id
 
     async def test_weak_password_reports_codes_and_creates_nothing(
         self, service: AuthService, db_session: AsyncSession
     ) -> None:
-        before = await count_users(db_session)
+        before = (await count_users(db_session), await count_identities(db_session))
 
         with pytest.raises(WeakPasswordError) as exc_info:
             await service.register(EMAIL, "alice-short")
 
         assert PasswordViolation.TOO_SHORT in exc_info.value.violations
         assert PasswordViolation.CONTAINS_EMAIL in exc_info.value.violations
-        assert await count_users(db_session) == before
+        assert (await count_users(db_session), await count_identities(db_session)) == before
 
-    async def test_duplicate_email_is_unavailable(self, service: AuthService) -> None:
+    async def test_duplicate_email_is_unavailable_and_creates_nothing(
+        self, service: AuthService, db_session: AsyncSession
+    ) -> None:
         await service.register(EMAIL, STRONG_PASSWORD)
+        before = (await count_users(db_session), await count_identities(db_session))
 
         with pytest.raises(RegistrationUnavailableError):
             await service.register("ALICE@example.com", "another strong passphrase")
+
+        # No orphaned identity-less user is left behind by the failed attempt.
+        assert (await count_users(db_session), await count_identities(db_session)) == before
 
     async def test_duplicate_still_pays_the_hashing_cost(
         self, service: AuthService, hasher: PasswordHasher, monkeypatch: pytest.MonkeyPatch
@@ -122,7 +166,7 @@ class TestRegister:
         db_session: AsyncSession,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        before = await count_users(db_session)
+        before = (await count_users(db_session), await count_identities(db_session))
 
         async def fail(*_: object) -> None:
             raise RuntimeError("session creation failed")
@@ -132,7 +176,7 @@ class TestRegister:
         with pytest.raises(RuntimeError):
             await service.register(EMAIL, STRONG_PASSWORD)
 
-        assert await count_users(db_session) == before
+        assert (await count_users(db_session), await count_identities(db_session)) == before
 
 
 class TestLogin:
@@ -141,8 +185,53 @@ class TestLogin:
 
         user, second = await service.login("ALICE@example.com", STRONG_PASSWORD)
 
-        assert user.email == EMAIL
+        assert email_identity(user).email == EMAIL
         assert second.session_id != first.session_id
+
+    async def test_login_resolves_the_identity_owner(
+        self, service: AuthService, db_session: AsyncSession
+    ) -> None:
+        registered, _ = await service.register(EMAIL, STRONG_PASSWORD)
+        await service.register("bob@example.com", "another strong passphrase")
+
+        user, pair = await service.login(EMAIL, STRONG_PASSWORD)
+
+        assert user.id == registered.id
+        assert pair.session_id is not None
+
+    async def test_login_records_identity_last_used_at(
+        self, service: AuthService, clock: FrozenClock
+    ) -> None:
+        await service.register(EMAIL, STRONG_PASSWORD)
+        clock.advance(timedelta(hours=1))
+
+        user, _ = await service.login(EMAIL, STRONG_PASSWORD)
+
+        assert email_identity(user).last_used_at == clock.now
+
+    async def test_failed_login_does_not_touch_last_used_at(
+        self, service: AuthService, db_session: AsyncSession
+    ) -> None:
+        user, _ = await service.register(EMAIL, STRONG_PASSWORD)
+
+        with pytest.raises(InvalidCredentialsError):
+            await service.login(EMAIL, "wrong passphrase entirely")
+
+        await db_session.refresh(email_identity(user))
+        assert email_identity(user).last_used_at is None
+
+    async def test_user_with_linked_oauth_identity_still_password_logs_in(
+        self, service: AuthService, db_session: AsyncSession
+    ) -> None:
+        user, _ = await service.register(EMAIL, STRONG_PASSWORD)
+        db_session.add(
+            UserIdentity(user_id=user.id, provider=IdentityProvider.GOOGLE, subject="g-alice")
+        )
+        await db_session.flush()
+
+        logged_in, _ = await service.login(EMAIL, STRONG_PASSWORD)
+
+        assert logged_in.id == user.id
 
     @pytest.mark.parametrize(
         ("email", "password"),
@@ -172,15 +261,35 @@ class TestLogin:
         with pytest.raises(InvalidCredentialsError):
             await service.login(EMAIL, STRONG_PASSWORD)
 
+    async def test_inactive_user_still_pays_a_real_verification(
+        self,
+        service: AuthService,
+        db_session: AsyncSession,
+        hasher: PasswordHasher,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Timing: an inactive account must not answer faster than an active one."""
+        user, _ = await service.register(EMAIL, STRONG_PASSWORD)
+        user.is_active = False
+        await db_session.flush()
+        verified: list[str] = []
+        original = hasher.verify
+
+        async def spy(password_hash: str, password: str) -> bool:
+            verified.append("x")
+            return await original(password_hash, password)
+
+        monkeypatch.setattr(hasher, "verify", spy)
+
+        with pytest.raises(InvalidCredentialsError):
+            await service.login(EMAIL, STRONG_PASSWORD)
+
+        assert verified == ["x"]
+
     async def test_non_email_accounts_cannot_password_login(
         self, service: AuthService, db_session: AsyncSession
     ) -> None:
-        db_session.add(
-            User(
-                auth_provider=AuthProvider.GOOGLE, provider_subject="g-1", email="gina@example.com"
-            )
-        )
-        await db_session.flush()
+        await add_oauth_user(db_session, IdentityProvider.GOOGLE, "g-1", "gina@example.com")
 
         with pytest.raises(InvalidCredentialsError):
             await service.login("gina@example.com", STRONG_PASSWORD)
@@ -196,12 +305,7 @@ class TestLogin:
     ) -> None:
         """Timing: unknown accounts must not answer faster than wrong passwords."""
         if scenario == "oauth_user":
-            db_session.add(
-                User(
-                    auth_provider=AuthProvider.APPLE, provider_subject="a-1", email="x@example.com"
-                )
-            )
-            await db_session.flush()
+            await add_oauth_user(db_session, IdentityProvider.APPLE, "a-1", "x@example.com")
         calls: list[str] = []
         original = hasher.verify_dummy
 
@@ -227,14 +331,15 @@ class TestLogin:
         user, _ = await build_service(db_session, test_settings, clock, weak).register(
             EMAIL, STRONG_PASSWORD
         )
-        old_hash = user.password_hash
+        identity = email_identity(user)
+        old_hash = identity.password_hash
 
         await build_service(db_session, test_settings, clock, strong).login(EMAIL, STRONG_PASSWORD)
 
-        await db_session.refresh(user)
-        assert user.password_hash != old_hash
-        assert user.password_hash is not None
-        assert "$m=16,t=2,p=1$" in user.password_hash
+        await db_session.refresh(identity)
+        assert identity.password_hash != old_hash
+        assert identity.password_hash is not None
+        assert "$m=16,t=2,p=1$" in identity.password_hash
 
     async def test_per_account_limit_applies_across_any_source(
         self,
@@ -277,4 +382,6 @@ async def test_existing_factory_users_are_unaffected(db_session: AsyncSession) -
     # Guards the shared factory used by Step 3 tests.
     user = await create_user(db_session)
 
-    assert user.auth_provider is AuthProvider.GUEST
+    assert user.is_guest is True
+    owned = select(func.count()).where(UserIdentity.user_id == user.id)
+    assert (await db_session.execute(owned)).scalar_one() == 0

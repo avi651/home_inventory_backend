@@ -377,8 +377,9 @@ class TestNoLeaks:
         await auth_client.post(f"{API}/refresh", json={"refresh_token": logged_in["refresh_token"]})
         await auth_client.get(f"{API}/me", headers=bearer(refreshed["access_token"]))
         await auth_client.post(f"{API}/logout", headers=bearer(registered["access_token"]))
-        password_hash = await db_session.get(User, uuid.UUID(registered["user"]["id"]))
-        assert password_hash is not None
+        user = await db_session.get(User, uuid.UUID(registered["user"]["id"]))
+        assert user is not None
+        (identity,) = user.identities
 
         logged = "\n".join(f"{r.getMessage()} {r.exc_text or ''}" for r in caplog.records)
         sensitive = [
@@ -386,7 +387,7 @@ class TestNoLeaks:
             "wrong passphrase entirely",
             email,
             "secret.person",
-            password_hash.password_hash or "",
+            identity.password_hash or "",
         ]
         for body in (registered, logged_in, refreshed):
             sensitive += [body["access_token"], body["refresh_token"]]

@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.tokens import AccessTokenService
-from app.models.user import User
+from app.models.user_identity import UserIdentity
 from tests.support.auth import API, bearer, login, register, registered_tokens
 from tests.support.passwords import STRONG_PASSWORD
 
@@ -39,7 +39,7 @@ class TestRegister:
         response = await register(auth_client, email="  Alice@EXAMPLE.com ")
 
         assert response.json()["user"]["email"] == "alice@example.com"
-        stored = (await db_session.execute(select(User.email))).scalars().all()
+        stored = (await db_session.execute(select(UserIdentity.subject))).scalars().all()
         assert "alice@example.com" in stored
 
     async def test_access_token_works_immediately(self, auth_client: AsyncClient) -> None:

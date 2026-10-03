@@ -66,5 +66,5 @@ class AuthResponse(TokenResponse):
             access_token=pair.access_token,
             refresh_token=pair.refresh_token,
             expires_in=pair.expires_in,
-            user=UserRead.model_validate(user),
+            user=UserRead.from_user(user),
         )
