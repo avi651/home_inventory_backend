@@ -28,6 +28,14 @@ SESSION_MAX_LIFETIME = timedelta(days=90)
 
 
 @dataclass(frozen=True)
+class Principal:
+    """The authenticated caller: an active user acting through one live session."""
+
+    user: User
+    session_id: uuid.UUID
+
+
+@dataclass(frozen=True)
 class TokenPair:
     access_token: str = field(repr=False)
     refresh_token: str = field(repr=False)
@@ -94,6 +102,22 @@ class SessionService:
             # presented token stays usable unless the rotation fully committed.
             await self._db.rollback()
             raise
+
+    async def get_active_principal(
+        self, *, user_id: uuid.UUID, session_id: uuid.UUID
+    ) -> Principal | None:
+        """Per-request check behind every access token: makes logout/revocation immediate."""
+        found = await self._sessions.get_with_user(session_id=session_id, user_id=user_id)
+        if found is None:
+            return None
+        auth_session, user = found
+        if (
+            auth_session.revoked_at is not None
+            or self._clock() >= auth_session.expires_at
+            or not user.is_active
+        ):
+            return None
+        return Principal(user=user, session_id=auth_session.id)
 
     async def revoke(
         self,

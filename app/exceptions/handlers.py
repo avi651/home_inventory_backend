@@ -8,6 +8,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.config import Settings
 from app.core.security import security_headers
+from app.exceptions.errors import AppError
 
 ERROR_CODES = {
     400: "bad_request",
@@ -46,6 +47,11 @@ def register_exception_handlers(app: FastAPI, settings: Settings) -> None:
     ) -> JSONResponse:
         return JSONResponse(error_body(422, details=_safe_validation_details(exc)), 422)
 
+    async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
+        # Fixed per-class code/message; details are explicitly chosen safe fields (e.g. codes).
+        body = {"error": {"code": exc.code, "message": exc.message, **exc.details}}
+        return JSONResponse(body, exc.status_code, headers=exc.headers)
+
     async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
         # Runs in Starlette's outermost ServerErrorMiddleware, outside SecurityHeadersMiddleware,
         # so headers are attached here. The exception is re-raised by Starlette and logged
@@ -54,4 +60,5 @@ def register_exception_handlers(app: FastAPI, settings: Settings) -> None:
 
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)  # type: ignore[arg-type]
     app.add_exception_handler(RequestValidationError, validation_exception_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(AppError, app_error_handler)  # type: ignore[arg-type]
     app.add_exception_handler(Exception, unhandled_exception_handler)

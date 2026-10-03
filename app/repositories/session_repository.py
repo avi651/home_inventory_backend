@@ -5,6 +5,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.auth_session import AuthSession, SessionRevokeReason
+from app.models.user import User
 
 
 class SessionRepository:
@@ -24,6 +25,18 @@ class SessionRepository:
             .execution_options(populate_existing=True)
         )
         return result.scalar_one_or_none()
+
+    async def get_with_user(
+        self, *, session_id: uuid.UUID, user_id: uuid.UUID
+    ) -> tuple[AuthSession, User] | None:
+        """Both ids must match one row: a token can never borrow another user's session."""
+        result = await self._db.execute(
+            select(AuthSession, User)
+            .join(User, User.id == AuthSession.user_id)
+            .where(AuthSession.id == session_id, AuthSession.user_id == user_id)
+        )
+        row = result.one_or_none()
+        return None if row is None else (row[0], row[1])
 
     async def revoke(
         self,

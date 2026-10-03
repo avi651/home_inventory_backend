@@ -1,4 +1,5 @@
 from collections.abc import AsyncIterator, Callable
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -10,11 +11,20 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from app.core.config import Environment, Settings
-from app.core.database import create_db_engine
+from app.core.database import create_db_engine, get_db_session
+from app.core.rate_limit import AuthRateLimits, RateLimit
 from app.main import create_app
+from tests.support.passwords import fast_hasher
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 TEST_ENV_FILE = PROJECT_ROOT / ".env.test"
+_UNLIMITED = RateLimit(limit=10_000, window=timedelta(minutes=1))
+GENEROUS_RATE_LIMITS = AuthRateLimits(
+    register_per_ip=_UNLIMITED,
+    login_per_ip=_UNLIMITED,
+    login_per_account=_UNLIMITED,
+    refresh_per_ip=_UNLIMITED,
+)
 
 
 def load_test_settings(**overrides: Any) -> Settings:
@@ -115,3 +125,27 @@ async def db_session(migrated_database: None, engine: AsyncEngine) -> AsyncItera
         finally:
             await session.close()
             await outer.rollback()
+
+
+@pytest.fixture
+async def auth_app(test_settings: Settings, db_session: AsyncSession) -> AsyncIterator[FastAPI]:
+    """App wired to the per-test rollback session, a fast hasher and generous rate limits.
+
+    Rate-limit behaviour itself is tested against DEFAULT_AUTH_RATE_LIMITS explicitly.
+    """
+
+    async def override_db() -> AsyncIterator[AsyncSession]:
+        yield db_session
+
+    app = create_app(test_settings)
+    app.dependency_overrides[get_db_session] = override_db
+    app.state.password_hasher = fast_hasher()
+    app.state.rate_limits = GENEROUS_RATE_LIMITS
+    yield app
+    await dispose_app(app)
+
+
+@pytest.fixture
+async def auth_client(auth_app: FastAPI) -> AsyncIterator[AsyncClient]:
+    async with make_client(auth_app) as c:
+        yield c

@@ -4,11 +4,15 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.router import api_router
 from app.api.routes import health
+from app.core.clock import utc_now
 from app.core.config import Settings, get_settings
 from app.core.database import create_db_engine, create_session_factory
 from app.core.logging import install_log_redaction
+from app.core.rate_limit import DEFAULT_AUTH_RATE_LIMITS, InMemoryRateLimiter
 from app.core.security import SecurityHeadersMiddleware
+from app.core.tokens import AccessTokenService
 from app.exceptions.handlers import register_exception_handlers
 
 DOCS_URL, REDOC_URL, OPENAPI_URL = "/docs", "/redoc", "/openapi.json"
@@ -38,6 +42,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.engine = engine
     app.state.session_factory = create_session_factory(engine)
+    # Swappable as a whole in tests; components read it at call time, never capture a value.
+    app.state.clock = utc_now
+    app.state.access_tokens = AccessTokenService(settings, clock=lambda: app.state.clock())
+    app.state.rate_limiter = InMemoryRateLimiter(clock=lambda: app.state.clock())
+    app.state.rate_limits = DEFAULT_AUTH_RATE_LIMITS
+    # Created lazily on first use (its constructor runs one Argon2 hash).
+    app.state.password_hasher = None
 
     register_exception_handlers(app, settings)
 
@@ -58,4 +69,5 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
 
     app.include_router(health.router)
+    app.include_router(api_router)
     return app
