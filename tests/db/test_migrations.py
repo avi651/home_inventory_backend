@@ -3,21 +3,13 @@ from collections.abc import Iterator
 
 import pytest
 from alembic import command
-from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import Engine, create_engine, inspect, text
 
 from app.core.config import Settings
-from tests.conftest import PROJECT_ROOT
+from tests.conftest import PROJECT_ROOT, alembic_config
 
 ALEMBIC_INI = PROJECT_ROOT / "alembic.ini"
-
-
-def alembic_config(settings: Settings) -> Config:
-    config = Config(str(ALEMBIC_INI))
-    config.attributes["database_url"] = settings.migration_database_url.get_secret_value()
-    config.attributes["configure_logger"] = False  # keep pytest's logging setup intact
-    return config
 
 
 @pytest.fixture
@@ -41,12 +33,32 @@ def test_alembic_ini_contains_no_database_url() -> None:
     assert not parser.get("alembic", "sqlalchemy.url", fallback="")
 
 
+def leftover_objects(engine: Engine) -> dict[str, list[str]]:
+    with engine.connect() as conn:
+        tables = conn.execute(
+            text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+        ).scalars()
+        types = conn.execute(
+            text(
+                "SELECT t.typname FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace "
+                "WHERE n.nspname = 'public' AND t.typtype = 'e'"
+            )
+        ).scalars()
+        return {
+            "tables": sorted(set(tables) - {"alembic_version"}),
+            "enum_types": sorted(types),
+        }
+
+
 def test_upgrade_downgrade_round_trip(test_settings: Settings, migrator_engine: Engine) -> None:
+    """Regression: downgrade once left the auth_provider enum behind, breaking re-upgrade."""
     config = alembic_config(test_settings)
     head = ScriptDirectory.from_config(config).get_current_head()
 
+    command.upgrade(config, "head")
     command.downgrade(config, "base")
     assert current_revision(migrator_engine) is None
+    assert leftover_objects(migrator_engine) == {"tables": [], "enum_types": []}
 
     command.upgrade(config, "head")
     assert current_revision(migrator_engine) == head

@@ -3,9 +3,11 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from alembic import command
+from alembic.config import Config
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from app.core.config import Environment, Settings
 from app.core.database import create_db_engine
@@ -77,3 +79,33 @@ async def app_with_settings() -> AsyncIterator[AppFactory]:
     yield factory
     for app in created:
         await dispose_app(app)
+
+
+def alembic_config(settings: Settings) -> Config:
+    config = Config(str(PROJECT_ROOT / "alembic.ini"))
+    config.attributes["database_url"] = settings.migration_database_url.get_secret_value()
+    config.attributes["configure_logger"] = False  # keep pytest's logging setup intact
+    return config
+
+
+@pytest.fixture(scope="session")
+def migrated_database(test_settings: Settings) -> None:
+    """Bring the test database to head once per session, as the migrator role."""
+    command.upgrade(alembic_config(test_settings), "head")
+
+
+@pytest.fixture
+async def db_session(migrated_database: None, engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
+    """Runtime-role session inside an outer transaction that is always rolled back.
+
+    join_transaction_mode="create_savepoint" lets code under test commit/rollback freely
+    (including after IntegrityError) without escaping the per-test transaction.
+    """
+    async with engine.connect() as conn:
+        outer = await conn.begin()
+        session = AsyncSession(bind=conn, join_transaction_mode="create_savepoint")
+        try:
+            yield session
+        finally:
+            await session.close()
+            await outer.rollback()
